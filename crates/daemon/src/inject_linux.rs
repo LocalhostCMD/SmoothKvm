@@ -159,6 +159,17 @@ fn hid_to_linux(code: u16) -> Option<u16> {
         0x36 => 51,  // ,
         0x37 => 52,  // .
         0x38 => 53,  // /
+        0x39 => 58,  // CapsLock
+        0x3A..=0x43 => 59 + (code - 0x3A), // F1-F10
+        0x44 => 87,  // F11
+        0x45 => 88,  // F12
+        0x47 => 70,  // ScrollLock
+        0x49 => 110, // Insert
+        0x4A => 102, // Home
+        0x4B => 104, // PageUp
+        0x4C => 111, // Delete
+        0x4D => 107, // End
+        0x4E => 109, // PageDown
         0x4F => 106, // Right
         0x50 => 105, // Left
         0x51 => 108, // Down

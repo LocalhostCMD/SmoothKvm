@@ -17,7 +17,7 @@ fn mouse(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) {
     });
 }
 
-fn key(scan: u16, extended: bool, pressed: bool) {
+pub fn key(scan: u16, extended: bool, pressed: bool) {
     let mut flags = KEYEVENTF_SCANCODE;
     if extended {
         flags |= KEYEVENTF_EXTENDEDKEY;
@@ -34,7 +34,7 @@ fn key(scan: u16, extended: bool, pressed: bool) {
 }
 
 /// USB HID usage -> (set-1 scancode, extended)
-fn hid_to_scan(code: u16) -> Option<(u16, bool)> {
+pub fn hid_to_scan(code: u16) -> Option<(u16, bool)> {
     const LETTERS: [u16; 26] = [
         0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32,
         0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
@@ -59,6 +59,17 @@ fn hid_to_scan(code: u16) -> Option<(u16, bool)> {
         0x36 => (0x33, false),
         0x37 => (0x34, false),
         0x38 => (0x35, false),
+        0x39 => (0x3A, false),
+        0x3A..=0x43 => (0x3B + (code - 0x3A), false),
+        0x44 => (0x57, false),
+        0x45 => (0x58, false),
+        0x47 => (0x46, false),
+        0x49 => (0x52, true),
+        0x4A => (0x47, true),
+        0x4B => (0x49, true),
+        0x4C => (0x53, true),
+        0x4D => (0x4F, true),
+        0x4E => (0x51, true),
         0x4F => (0x4D, true),
         0x50 => (0x4B, true),
         0x51 => (0x50, true),
