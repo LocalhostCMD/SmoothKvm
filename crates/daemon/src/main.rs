@@ -13,7 +13,14 @@ mod inject_win;
 fn inject(ev: &InputEvent) {
     inject_win::inject(ev)
 }
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+mod inject_linux;
+
+#[cfg(target_os = "linux")]
+fn inject(ev: &InputEvent) {
+    inject_linux::inject(ev)
+}
+#[cfg(not(any(windows, target_os = "linux")))]
 fn inject(_ev: &InputEvent) {
     eprintln!("injection not implemented on this OS yet");
 }
