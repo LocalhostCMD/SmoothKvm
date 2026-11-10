@@ -33,3 +33,6 @@ features = [
 tao = "0.37"
 wry = "0.57"
 tray-icon = "0.26"
+
+[dependencies.ratatui]
+version = "0.30"

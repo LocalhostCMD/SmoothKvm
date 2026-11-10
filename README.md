@@ -1,65 +1,42 @@
 # SmoothKvm
 
-Share one keyboard and mouse across several computers. Windows PC = the one with the keyboard
-and mouse; the other machines (Linux receivers) are screens on its left/right/top/bottom.
+One keyboard and mouse across several computers. Your Windows PC controls other machines
+(Ubuntu today) as extra screens on its left/right/top/bottom. Everything between machines is
+encrypted and only paired devices are accepted.
 
-## Quick start
-Windows:
-```
-SmoothKvm install --autostart     # once: puts SmoothKvm on PATH, starts with Windows
-SmoothKvm                         # opens the control panel (starts the background app)
-```
-Linux receiver (the machine being controlled):
-```
-sudo SmoothKvm listen --pair      # first time, then: sudo SmoothKvm listen
-```
-In the panel: click a side of "This PC" to add a screen, enter the receiver's address
-(`host:24800`, e.g. its Tailscale IP), press **Pair this device**, confirm that both sides show
-the same code. Everything else (animations, game mode, displays) is in the panel.
+## Install
+**Windows**: run `SmoothKvm-Setup-<version>.exe`. It adds a Start Menu icon (optional desktop icon,
+start-with-Windows, and `SmoothKvm` in your terminal). No admin rights needed.
+
+**Ubuntu / Debian**: install `smoothkvm_<version>_amd64.deb` (double-click it, or
+`sudo apt install ./smoothkvm_<version>_amd64.deb`). It installs a service that starts on boot, sets up
+the virtual keyboard/mouse permission, and adds the `SmoothKvm` / `smoothkvm` commands and a menu entry.
+
+## Use
+- **Windows app**: open *SmoothKvm* from the Start Menu. Click a side of "This PC" to add a screen, enter
+  its address (`host:24800`, e.g. a Tailscale IP), press **Pair this device**.
+- **Terminal UI (both)**: type `SmoothKvm`, then `/help`. On the Ubuntu screen type `/pair` first, then on
+  Windows `/pair <name>`; confirm the same code on both.
+- **Emergency stop**: red button, tray menu, `/stop`, or press **Scroll Lock three times**. It returns control,
+  makes every screen release held keys/buttons, and pauses switching until you resume.
 
 ## Features
-- **Several screens**: up to four, one per side of your PC. Each has its own name, address, size.
-- **Native app**: its own window (no browser) plus a tray icon. Closing the window keeps it running in the
-  tray and frees the window's memory. Double-click it or type `SmoothKvm`.
-- **Emergency stop**: red button in the app, tray menu item, or press the escape key (Scroll Lock) **three
-  times quickly**. Returns control to this PC, makes every screen release held keys/buttons, releases
-  modifiers/buttons here, and pauses switching until you press Resume.
-- **Effects**: Bounce / Elastic / Slide / Overshoot / Spring / **Custom bezier curve** (with live plot and
-  presets), duration and distance, on arrival and/or return, applied on both your PC and the remote screen.
-- **Game mode**: while a full-screen app or game is running (Windows' own detection) the cursor
-  will not switch screens. Toggle in the panel; the header shows when it is active.
-- **On-demand display** for headless machines (Xvfb + XFCE + x11vnc), started/stopped from the panel
-  and viewed through an encrypted tunnel with a VNC viewer (TigerVNC). `sudo apt install xvfb x11vnc xfce4`.
-- Escape key (default Scroll Lock) always returns control to this PC.
+Up to four screens (one per side) · effects: Bounce/Elastic/Slide/Overshoot/Spring/None or your own cubic-bezier
+curve (duration, distance, on arrival and/or return) · game mode: no switching while a full-screen app/game runs ·
+on-demand virtual display for headless machines (Xvfb + XFCE + x11vnc through the encrypted tunnel, viewed with
+TigerVNC) · tray icon, window freed when closed.
 
 ## Security model
-- Transport: **Noise_XX_25519_ChaChaPoly_BLAKE2s** (mutual authentication, forward secrecy, ChaCha20-Poly1305).
-- Every device has a long-term key (`identity.key`, user-only permissions). Only **paired** keys are accepted.
-- Pairing is explicit: confirm the same 6-digit code on both devices (defeats a man-in-the-middle).
-  Receiver pairing mode closes after 120 s or the first pairing.
-- The receiver releases all held keys/buttons if the sender leaves or goes silent for 10 s.
-- The VNC server only listens on the receiver's localhost; it is reached only through the paired tunnel.
-- Config panel: loopback only, random secret token, Host check, strict CSP.
+Noise_XX_25519_ChaChaPoly_BLAKE2s (mutual authentication, forward secrecy). Each device has a long-term key;
+only **paired** keys are accepted, pairing needs the same 6-digit code confirmed on both devices. Receivers release
+held keys if the sender goes silent for 10 s. The VNC server only listens on the receiver's localhost. The local
+control API listens on 127.0.0.1 only, with a secret token and a Host check.
 
-## Files
-Config dir: `%APPDATA%\softwarekvm` (Windows) or `~/.config/softwarekvm` (Linux):
-`config.toml`, `identity.key`, `peers.toml`, `panel.token`, `smoothkvm.log`.
-
-## Commands
-Windows: `SmoothKvm` | `start` | `stop` | `status` | `install [--autostart]` | `uninstall`
-Linux: `SmoothKvm listen [--pair]` | `display start [WxH]|stop|status`
-Both: `SmoothKvm view <addr>` (display tunnel on localhost:5901) | `test <addr> [--pair]`
-
-### Run the Linux receiver without sudo
-```
-echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | sudo tee /etc/udev/rules.d/99-uinput.rules
-sudo usermod -aG input $USER     # log out and in again
-sudo udevadm control --reload && sudo udevadm trigger
-```
-
-## Layout
-`crates/protocol` shared types + encrypted transport; `crates/daemon` (`SmoothKvm`): Windows capture
-and panel, Linux/Windows injection, display control.
+## Build
+`cargo build --release` (Windows: `SmoothKvm.exe`, `SmoothKvmApp.exe`; Linux: `SmoothKvm`).
+Windows installer: `packaging/windows/SmoothKvm.iss` (Inno Setup 6). Ubuntu package:
+`packaging/linux/build-deb.sh` (or `wsl-build.sh` from Windows).
 
 ## Not yet
-Clipboard sync, system-tray icon, edge-switching input into the virtual (Xvfb) display.
+Linux as the *controlling* machine, Windows as a *controlled* screen, clipboard sync, overlay visual effects,
+code signing (unsigned programs can trigger antivirus warnings, see below).

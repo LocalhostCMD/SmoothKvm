@@ -95,6 +95,8 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                 req,
                 200,
                 json!({
+                    "mode": "sender",
+                    "version": crate::VERSION,
                     "config": store::load_config(),
                     "status": shared::statuses(),
                     "pairing": shared::pending_pair(),

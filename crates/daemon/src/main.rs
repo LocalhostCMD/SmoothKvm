@@ -1,33 +1,32 @@
 // SmoothKvm: software KVM.
 //
-// Windows (the PC with the keyboard and mouse):
-//   SmoothKvm                 open the control panel (starts the background app if needed)
-//   SmoothKvm start | stop | status
-//   SmoothKvm install [--autostart]   put SmoothKvm on your PATH (and start with Windows)
-//   SmoothKvm uninstall
-// Linux (the machine being controlled):
-//   SmoothKvm listen [--pair]          receive input; --pair accepts a new device for 2 minutes
-//   SmoothKvm display start [WxH] | stop | status     on-demand virtual screen
-// Both:
-//   SmoothKvm view <addr>              tunnel a remote display to localhost:5901 for a VNC viewer
-//   SmoothKvm test <addr> [--pair]     send a small mouse-square
+//   SmoothKvm                  interactive terminal UI (type /help)
+//   SmoothKvm open             Windows: open the app window
+//   SmoothKvm start | stop     Windows: start / stop the background app
+//   SmoothKvm service          Linux: run the receiver as a background service (installed by the .deb)
+//   SmoothKvm listen [--pair]  Linux: run the receiver in this terminal
+//   SmoothKvm display ...      Linux: virtual display control
+//   SmoothKvm view <addr>      tunnel a remote display to localhost:5901 for a VNC viewer
 //
 // All traffic is encrypted and mutually authenticated (see kvm_protocol::secure).
-// A GUI-subsystem app on Windows: double-clicking opens the window with no console flash.
-// When started from a terminal we attach to it so command output still shows up there.
-#![cfg_attr(windows, windows_subsystem = "windows")]
-
 use kvm_protocol::secure;
 use kvm_protocol::{DisplayAction, InputEvent, Message, MouseButton};
 use std::collections::HashSet;
 use std::io;
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+mod ctl;
+mod httpd;
 mod net;
+mod rctl;
+mod shared;
 mod store;
+mod tui;
 use store::Identity;
 
 #[cfg(unix)]
@@ -46,8 +45,6 @@ mod inject_win;
 mod inject_linux;
 #[cfg(windows)]
 mod panel;
-#[cfg(windows)]
-mod shared;
 
 #[cfg(windows)]
 fn inject(ev: &InputEvent) {
@@ -71,7 +68,15 @@ fn display_command(_a: DisplayAction) -> (bool, String) {
     (false, "virtual displays are created on the Linux machine".into())
 }
 
-const PAIRING_WINDOW: Duration = Duration::from_secs(120);
+/// Release every key and mouse button on this machine (emergency stop on the receiver).
+pub fn release_everything() {
+    for code in 1..=0xE7u16 {
+        inject(&InputEvent::Key { code, pressed: false });
+    }
+    for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle, MouseButton::Back, MouseButton::Forward] {
+        inject(&InputEvent::MouseButton { button, pressed: false });
+    }
+}
 
 /// Tracks pressed inputs so nothing stays stuck if the sender leaves or disappears.
 #[derive(Default)]
@@ -111,11 +116,21 @@ impl Held {
     }
 }
 
-fn handle_session(stream: TcpStream, ident: &Identity, pairing: bool) -> io::Result<bool> {
+/// `service`: running as a background service (pairing prompts go to the terminal UI, not stdin).
+fn handle_session(stream: TcpStream, ident: &Identity, service: bool) -> io::Result<bool> {
     let peer = stream.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
     let est = secure::accept(stream, &ident.private)?;
     let mut conn = est.conn;
-    let newly_paired = net::authorize(&mut conn, &est.remote_key, &est.sas, pairing, &peer, &net::cli_confirm)?;
+    let svc = |name: &str, sas: &str| shared::prompt_pair(name, sas);
+    let confirm: &dyn Fn(&str, &str) -> bool = if service { &svc } else { &net::cli_confirm };
+    let newly_paired = net::authorize(&mut conn, &est.remote_key, &est.sas, shared::pairing_open(), &peer, confirm)?;
+    let id = shared::session_start(&peer);
+    let result = session_loop(conn, &peer, newly_paired);
+    shared::session_end(id);
+    result
+}
+
+fn session_loop(mut conn: secure::SecureConn, peer: &str, newly_paired: bool) -> io::Result<bool> {
     println!("secure session with {peer}");
     // The sender pings every second; silence for 10s means it's gone.
     conn.set_timeouts(Some(Duration::from_secs(10)), Some(Duration::from_secs(5)))?;
@@ -155,31 +170,32 @@ fn handle_session(stream: TcpStream, ident: &Identity, pairing: bool) -> io::Res
 
 const MAX_SESSIONS: usize = 16;
 
-fn serve(addr: &str, pairing: bool) -> io::Result<()> {
+fn serve(addr: &str, pair: bool, service: bool) -> io::Result<()> {
     let ident = Arc::new(Identity::load_or_create()?);
     let listener = TcpListener::bind(addr)?;
-    println!("SmoothKvm receiver listening on {addr} (device id {})", store::short(&secure::to_hex(&ident.public)));
-    let pairing_until = Instant::now() + PAIRING_WINDOW;
-    if pairing {
-        println!("PAIRING MODE on for {} seconds. Press 'Pair this device' in the SmoothKvm panel now.", PAIRING_WINDOW.as_secs());
+    println!("SmoothKvm receiver {VERSION} listening on {addr} (device id {})", store::short(&secure::to_hex(&ident.public)));
+    if service {
+        let token = store::panel_token()?;
+        let server = rctl::bind()?;
+        let id = ident.clone();
+        std::thread::spawn(move || rctl::serve(server, token, id));
     }
-    let pairing = Arc::new(AtomicBool::new(pairing));
+    if pair {
+        shared::open_pairing(120);
+        println!("PAIRING MODE on for 120 seconds.");
+    }
     let active = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        if pairing.load(Ordering::SeqCst) && Instant::now() > pairing_until {
-            pairing.store(false, Ordering::SeqCst);
-            println!("pairing window closed");
-        }
         // Input, control and display sessions run side by side; cap them so strangers can't flood us.
         if active.fetch_add(1, Ordering::SeqCst) >= MAX_SESSIONS {
             active.fetch_sub(1, Ordering::SeqCst);
             continue;
         }
-        let (ident, pairing, active) = (ident.clone(), pairing.clone(), active.clone());
+        let (ident, active) = (ident.clone(), active.clone());
         std::thread::spawn(move || {
-            match handle_session(stream, &ident, pairing.load(Ordering::SeqCst)) {
-                Ok(true) => pairing.store(false, Ordering::SeqCst),
+            match handle_session(stream, &ident, service) {
+                Ok(true) => shared::close_pairing(),
                 Ok(false) => {}
                 Err(e) => println!("rejected/ended: {e}"),
             }
@@ -229,44 +245,27 @@ fn view(addr_override: Option<String>) -> io::Result<()> {
 
 fn usage() {
     eprintln!(
-        "SmoothKvm\n  Windows:  SmoothKvm | start | stop | status | install [--autostart] | uninstall\n  Linux:    SmoothKvm listen [--pair] | display start [WxH]|stop|status\n  Both:     SmoothKvm view <addr> | test <addr> [--pair]"
+        "SmoothKvm {VERSION}\n  SmoothKvm                 interactive terminal UI (type /help)\n  Windows:  open | start | stop | status | install [--autostart] | uninstall\n  Linux:    service | listen [--pair] | display start [WxH]|stop|status\n  Both:     view <addr> | test <addr> [--pair] | --version"
     );
 }
 
-#[cfg(windows)]
-fn attach_console() {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::Console::*;
-    unsafe {
-        let missing = |id| GetStdHandle(id).map(|h| h.is_invalid() || h.0.is_null()).unwrap_or(true);
-        if !(missing(STD_OUTPUT_HANDLE) || missing(STD_ERROR_HANDLE) || missing(STD_INPUT_HANDLE)) {
-            return; // output/input already redirected (e.g. the background app's log file)
-        }
-        if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
-            return; // started from Explorer: no console, nothing to print to
-        }
-        for (id, name, write) in [(STD_OUTPUT_HANDLE, "CONOUT$", true), (STD_ERROR_HANDLE, "CONOUT$", true), (STD_INPUT_HANDLE, "CONIN$", false)] {
-            if missing(id) {
-                if let Ok(f) = std::fs::OpenOptions::new().read(!write).write(write).open(name) {
-                    let _ = SetStdHandle(id, HANDLE(f.as_raw_handle() as _));
-                    std::mem::forget(f);
-                }
-            }
-        }
-    }
-}
-
 fn main() -> io::Result<()> {
-    #[cfg(windows)]
-    attach_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
     let pos: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
     let cfg = store::load_config();
     match args.first().map(String::as_str) {
+        None | Some("tui") => tui::run(),
+        Some("--version") | Some("-V") | Some("version") => {
+            println!("SmoothKvm {VERSION}");
+            Ok(())
+        }
+        Some("--help") | Some("-h") | Some("help") => {
+            usage();
+            Ok(())
+        }
         #[cfg(windows)]
-        None | Some("panel") | Some("open") => app::open_panel(),
+        Some("open") | Some("panel") | Some("app") => app::open_panel(),
         #[cfg(windows)]
         Some("daemon") => gui::run(flag("--show")),
         #[cfg(windows)]
@@ -279,9 +278,10 @@ fn main() -> io::Result<()> {
         Some("install") => app::install(flag("--autostart")),
         #[cfg(windows)]
         Some("uninstall") => app::uninstall(),
+        Some("service") => serve(&format!("0.0.0.0:{}", cfg.port), false, true),
         Some("listen") => {
             let addr = pos.first().map(|s| s.to_string()).unwrap_or_else(|| format!("0.0.0.0:{}", cfg.port));
-            serve(&addr, flag("--pair"))
+            serve(&addr, flag("--pair"), false)
         }
         Some("display") => {
             #[cfg(unix)]
@@ -290,7 +290,7 @@ fn main() -> io::Result<()> {
             }
             #[cfg(not(unix))]
             {
-                Err(io::Error::new(io::ErrorKind::Unsupported, "virtual displays are created on the Linux machine; use the panel"))
+                Err(io::Error::new(io::ErrorKind::Unsupported, "virtual displays are created on the Linux machine; use the app"))
             }
         }
         Some("view") => view(pos.first().map(|s| s.to_string())),

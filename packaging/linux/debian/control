@@ -1,0 +1,12 @@
+Package: smoothkvm
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: SmoothKvm <noreply@example.com>
+Depends: libc6
+Recommends: xvfb, x11vnc, xfce4
+Description: One keyboard and mouse across all your computers
+ SmoothKvm lets a Windows PC's keyboard and mouse control this machine over an
+ encrypted, paired connection. Installs a background service that starts on boot,
+ plus the SmoothKvm terminal UI (type SmoothKvm).

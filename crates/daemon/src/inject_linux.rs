@@ -194,7 +194,11 @@ pub fn inject(ev: &InputEvent) {
                 let _ = DEVICE.set(Mutex::new(d));
             }
             Err(e) => {
-                eprintln!("cannot open /dev/uinput: {e} (run as root or add a udev rule)");
+                // Say it once, not for every key event.
+                static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("cannot open /dev/uinput: {e} (the SmoothKvm package sets this up; otherwise run as root)");
+                }
                 return;
             }
         }

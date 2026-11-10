@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+rm -rf /etc/systemd/system/smoothkvm.service.d 2>/dev/null || true
+if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+exit 0

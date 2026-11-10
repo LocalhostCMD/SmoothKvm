@@ -1,0 +1,23 @@
+#!/bin/sh
+set -e
+# Which account should the service run as? (it owns ~/.config/softwarekvm and any virtual display)
+U="${SMOOTHKVM_USER:-${SUDO_USER:-}}"
+if [ -z "$U" ] || [ "$U" = "root" ]; then
+  U="$(getent passwd | awk -F: '$3>=1000 && $3<60000 {print $1; exit}')"
+fi
+if [ -z "$U" ]; then U=root; fi
+mkdir -p /etc/systemd/system/smoothkvm.service.d
+printf '[Service]\nUser=%s\nSupplementaryGroups=input\n' "$U" > /etc/systemd/system/smoothkvm.service.d/user.conf
+if [ "$U" != "root" ]; then usermod -aG input "$U" || true; fi
+modprobe uinput 2>/dev/null || true
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm control --reload-rules 2>/dev/null || true
+  udevadm trigger --subsystem-match=misc 2>/dev/null || true
+fi
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload || true
+  systemctl enable smoothkvm.service >/dev/null 2>&1 || true
+  systemctl restart smoothkvm.service || true
+fi
+echo "SmoothKvm installed. The service runs as '$U'. Type  SmoothKvm  to open it."
+exit 0

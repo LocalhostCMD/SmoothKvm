@@ -1,0 +1,14 @@
+[Unit]
+Description=SmoothKvm receiver (shares another computer's keyboard and mouse with this one)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The user is filled in by the package (see /etc/systemd/system/smoothkvm.service.d/user.conf).
+ExecStart=/usr/bin/SmoothKvm service
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
