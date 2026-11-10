@@ -1,10 +1,11 @@
 //! On-demand virtual display for a headless machine (Linux).
 //!
-//! `kvmd display start` launches Xvfb (virtual screen) + XFCE + x11vnc, where x11vnc listens
-//! on 127.0.0.1 only. The Windows side reaches it through the encrypted, paired tunnel
-//! (`kvmd view`), so nothing new is exposed on the network. `kvmd display stop` removes it all.
-//! Run as your normal user (no sudo needed).
+//! Start launches Xvfb (virtual screen) + XFCE + x11vnc, where x11vnc listens on 127.0.0.1
+//! only. The Windows side reaches it through the encrypted, paired tunnel, so nothing new is
+//! exposed on the network. It can be controlled locally (`SmoothKvm display ...`) or remotely
+//! from the SmoothKvm panel.
 use crate::store::config_dir;
+use kvm_protocol::DisplayAction;
 use std::fs;
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -43,7 +44,7 @@ fn launch(name: &str, cmd: &mut Command, pids: &mut Vec<(String, i32)>) -> io::R
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
     let child = cmd.spawn().map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
-            io::Error::new(io::ErrorKind::NotFound, format!("{name} not found; install it: sudo apt install xvfb x11vnc xfce4"))
+            io::Error::new(io::ErrorKind::NotFound, format!("{name} not found; install: sudo apt install xvfb x11vnc xfce4"))
         } else {
             e
         }
@@ -53,41 +54,26 @@ fn launch(name: &str, cmd: &mut Command, pids: &mut Vec<(String, i32)>) -> io::R
     Ok(pid)
 }
 
-fn valid_resolution(s: &str) -> bool {
-    match s.split_once('x') {
-        Some((w, h)) => match (w.parse::<u32>(), h.parse::<u32>()) {
-            (Ok(w), Ok(h)) => (320..=7680).contains(&w) && (200..=4320).contains(&h),
-            _ => false,
-        },
-        None => false,
-    }
+fn valid_resolution(w: u32, h: u32) -> bool {
+    (320..=7680).contains(&w) && (200..=4320).contains(&h)
 }
 
-pub fn run(action: Option<&str>, arg: Option<&str>) -> io::Result<()> {
-    match action {
-        Some("start") => start(arg.unwrap_or("1920x1080")),
-        Some("stop") => stop(),
-        Some("status") => status(),
-        _ => {
-            eprintln!("usage: kvmd display start [WxH] | stop | status");
-            Ok(())
-        }
-    }
+fn is_running() -> bool {
+    read_pids().iter().any(|(_, p)| alive(*p))
 }
 
-fn start(res: &str) -> io::Result<()> {
-    if !valid_resolution(res) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "resolution must look like 1920x1080"));
+pub fn start(w: u32, h: u32) -> io::Result<String> {
+    if !valid_resolution(w, h) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "resolution out of range"));
     }
-    if read_pids().iter().any(|(_, p)| alive(*p)) {
-        println!("display already running (kvmd display status)");
-        return Ok(());
+    if is_running() {
+        return Ok("display already running".into());
     }
     let mut pids = Vec::new();
     let result = (|| -> io::Result<()> {
         launch(
             "Xvfb",
-            Command::new("Xvfb").args([DISPLAY, "-screen", "0", &format!("{res}x24"), "-nolisten", "tcp"]),
+            Command::new("Xvfb").args([DISPLAY, "-screen", "0", &format!("{w}x{h}x24"), "-nolisten", "tcp"]),
             &mut pids,
         )?;
         let sock = format!("/tmp/.X11-unix/X{}", &DISPLAY[1..]);
@@ -126,31 +112,56 @@ fn start(res: &str) -> io::Result<()> {
         let _ = stop();
         return Err(e);
     }
-    println!("virtual display {DISPLAY} ({res}) is running; VNC on 127.0.0.1:{VNC_PORT} (local only).");
-    println!("From Windows: kvmd view <this-machine-ip>:24800   then point a VNC viewer at localhost:5901");
-    Ok(())
+    Ok(format!("virtual display {DISPLAY} ({w}x{h}) is running"))
 }
 
-fn stop() -> io::Result<()> {
+pub fn stop() -> io::Result<String> {
     let pids = read_pids();
-    for (name, pid) in pids.iter().rev() {
+    let mut any = false;
+    for (_, pid) in pids.iter().rev() {
         if alive(*pid) {
             // negative pid = the whole process group we created for it
             unsafe { libc::kill(-*pid, libc::SIGTERM) };
-            println!("stopped {name}");
+            any = true;
         }
     }
     let _ = fs::remove_file(pid_file());
-    Ok(())
+    Ok(if any { "display stopped".into() } else { "display was not running".into() })
 }
 
-fn status() -> io::Result<()> {
-    let pids = read_pids();
-    if pids.is_empty() {
-        println!("display: not running");
+pub fn status() -> (bool, String) {
+    let running = is_running();
+    (running, if running { "display running".into() } else { "display not running".into() })
+}
+
+/// Handle a remote control request from a paired sender.
+pub fn command(a: DisplayAction) -> (bool, String) {
+    match a {
+        DisplayAction::Start { width, height } => match start(width, height) {
+            Ok(m) => (true, m),
+            Err(e) => (false, e.to_string()),
+        },
+        DisplayAction::Stop => match stop() {
+            Ok(m) => (false, m),
+            Err(e) => (is_running(), e.to_string()),
+        },
+        DisplayAction::Status => status(),
     }
-    for (name, pid) in pids {
-        println!("{name}: {}", if alive(pid) { "running" } else { "stopped" });
+}
+
+pub fn run(action: Option<&str>, arg: Option<&str>) -> io::Result<()> {
+    match action {
+        Some("start") => {
+            let res = arg.unwrap_or("1920x1080");
+            let (w, h) = res
+                .split_once('x')
+                .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resolution must look like 1920x1080"))?;
+            println!("{}", start(w, h)?);
+        }
+        Some("stop") => println!("{}", stop()?),
+        Some("status") => println!("{}", status().1),
+        _ => eprintln!("usage: SmoothKvm display start [WxH] | stop | status"),
     }
     Ok(())
 }

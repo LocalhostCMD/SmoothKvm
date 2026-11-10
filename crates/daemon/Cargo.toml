@@ -3,6 +3,10 @@ name = "kvmd"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "SmoothKvm"
+path = "src/main.rs"
+
 [dependencies]
 kvm-protocol = { path = "../protocol" }
 serde.workspace = true
@@ -20,5 +24,6 @@ features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]

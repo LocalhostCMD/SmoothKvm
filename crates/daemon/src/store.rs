@@ -109,6 +109,7 @@ pub fn config_mtime() -> Option<std::time::SystemTime> {
     fs::metadata(config_path()).and_then(|m| m.modified()).ok()
 }
 
+#[allow(dead_code)]
 pub fn save_config(cfg: &Config) -> io::Result<()> {
     let text = toml::to_string_pretty(cfg).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     fs::create_dir_all(config_dir())?;
@@ -116,6 +117,7 @@ pub fn save_config(cfg: &Config) -> io::Result<()> {
 }
 
 /// Random secret that the local config panel requires on every API call.
+#[allow(dead_code)]
 pub fn panel_token() -> io::Result<String> {
     let path = config_dir().join("panel.token");
     if let Ok(t) = fs::read_to_string(&path) {

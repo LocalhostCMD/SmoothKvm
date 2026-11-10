@@ -1,36 +1,50 @@
-# Softwarekvm
+# SmoothKvm
 
-Share one keyboard and mouse between a Windows PC (sender) and a Linux machine (receiver).
+Share one keyboard and mouse across several computers. Windows PC = the one with the keyboard
+and mouse; the other machines (Linux receivers) are screens on its left/right/top/bottom.
+
+## Quick start
+Windows:
+```
+SmoothKvm install --autostart     # once: puts SmoothKvm on PATH, starts with Windows
+SmoothKvm                         # opens the control panel (starts the background app)
+```
+Linux receiver (the machine being controlled):
+```
+sudo SmoothKvm listen --pair      # first time, then: sudo SmoothKvm listen
+```
+In the panel: click a side of "This PC" to add a screen, enter the receiver's address
+(`host:24800`, e.g. its Tailscale IP), press **Pair this device**, confirm that both sides show
+the same code. Everything else (animations, game mode, displays) is in the panel.
+
+## Features
+- **Several screens**: up to four, one per side of your PC. Each has its own name, address, size.
+- **Animations**: Bounce / Elastic / Slide / None, duration and distance, on arrival and/or return.
+- **Game mode**: while a full-screen app or game is running (Windows' own detection) the cursor
+  will not switch screens. Toggle in the panel; the header shows when it is active.
+- **On-demand display** for headless machines (Xvfb + XFCE + x11vnc), started/stopped from the panel
+  and viewed through an encrypted tunnel with a VNC viewer (TigerVNC). `sudo apt install xvfb x11vnc xfce4`.
+- Escape key (default Scroll Lock) always returns control to this PC.
 
 ## Security model
 - Transport: **Noise_XX_25519_ChaChaPoly_BLAKE2s** (mutual authentication, forward secrecy, ChaCha20-Poly1305).
 - Every device has a long-term key (`identity.key`, user-only permissions). Only **paired** keys are accepted.
-- Pairing is explicit: run both sides with `--pair`, confirm the same 6-digit code on both screens
-  (this defeats a man-in-the-middle). Pairing mode on the receiver closes after 120 s or the first pairing.
-- Unknown or unpaired peers are rejected before any input is processed.
+- Pairing is explicit: confirm the same 6-digit code on both devices (defeats a man-in-the-middle).
+  Receiver pairing mode closes after 120 s or the first pairing.
 - The receiver releases all held keys/buttons if the sender leaves or goes silent for 10 s.
-- Escape key (default Scroll Lock) always returns control to the sender PC.
+- The VNC server only listens on the receiver's localhost; it is reached only through the paired tunnel.
 - Config panel: loopback only, random secret token, Host check, strict CSP.
-- Not implemented yet: clipboard sync (setting exists), system-tray icon, auto-start.
 
 ## Files
 Config dir: `%APPDATA%\softwarekvm` (Windows) or `~/.config/softwarekvm` (Linux):
-`config.toml`, `identity.key`, `peers.toml`, `panel.token`.
+`config.toml`, `identity.key`, `peers.toml`, `panel.token`, `smoothkvm.log`.
 
-## Usage
-Receiver (Linux), needs access to `/dev/uinput`:
-```
-sudo ./target/release/kvmd listen --pair      # first time: pair
-sudo ./target/release/kvmd listen             # afterwards
-```
-Sender (Windows):
-```
-kvmd send 192.168.1.50:24800 --pair           # first time: pair, confirm the code on both
-kvmd send                                     # afterwards (address comes from config)
-kvmd panel                                    # config panel in your browser
-```
+## Commands
+Windows: `SmoothKvm` | `start` | `stop` | `status` | `install [--autostart]` | `uninstall`
+Linux: `SmoothKvm listen [--pair]` | `display start [WxH]|stop|status`
+Both: `SmoothKvm view <addr>` (display tunnel on localhost:5901) | `test <addr> [--pair]`
 
-### Run the receiver without sudo
+### Run the Linux receiver without sudo
 ```
 echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | sudo tee /etc/udev/rules.d/99-uinput.rules
 sudo usermod -aG input $USER     # log out and in again
@@ -38,23 +52,8 @@ sudo udevadm control --reload && sudo udevadm trigger
 ```
 
 ## Layout
-`crates/protocol` shared types + encrypted transport; `crates/daemon` (`kvmd`): Windows capture,
-Linux/Windows injection, local config panel.
+`crates/protocol` shared types + encrypted transport; `crates/daemon` (`SmoothKvm`): Windows capture
+and panel, Linux/Windows injection, display control.
 
-## Roadmap
-Clipboard, tray icon + autostart, on-demand video from the DL380.
-
-## On-demand display for a headless machine
-On the Linux box (as your normal user, no sudo): `sudo apt install xvfb x11vnc xfce4`, then
-```
-kvmd display start [1920x1080]    # Xvfb + XFCE + x11vnc (127.0.0.1 only)
-kvmd display stop
-kvmd display status
-```
-The receiver (`sudo kvmd listen`) must be running. On Windows:
-```
-kvmd view 10.0.0.180:24800        # then connect any VNC viewer to localhost:5901
-```
-The VNC stream travels inside the same paired, encrypted connection; no extra port is exposed.
-Note: the VNC viewer supplies its own keyboard/mouse for that display. Edge-switching input
-(uinput) controls a real desktop, not the Xvfb screen.
+## Not yet
+Clipboard sync, system-tray icon, edge-switching input into the virtual (Xvfb) display.

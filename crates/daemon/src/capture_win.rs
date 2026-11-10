@@ -1,9 +1,9 @@
-//! Windows input capture: low-level hooks, edge switching, forwarding to the remote.
+//! Windows input capture: low-level hooks, edge switching between several remote screens.
 //!
-//! While the cursor is "remote" every mouse/keyboard event is swallowed locally and
-//! sent to the receiver. The local cursor is parked at the screen centre and movement
+//! While the cursor is on a remote screen every mouse/keyboard event is swallowed locally
+//! and sent to that receiver. The local cursor is parked at the screen centre and movement
 //! is measured as the offset from that point. Hook callbacks use `try_lock` so they can
-//! never deadlock or stall input; they only touch memory and a channel.
+//! never deadlock or stall input; they only touch memory and channels.
 use crate::inject_win;
 use kvm_protocol::{Animation, AnimationStyle, Config, Edge, InputEvent, Message, MouseButton};
 use std::collections::HashMap;
@@ -13,12 +13,16 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Shell::SHQueryUserNotificationState;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 struct State {
     cfg: Config,
-    remote: bool,
-    connected: bool,
+    generation: u64,
+    senders: Vec<Sender<Message>>,
+    connected: Vec<bool>,
+    /// Index of the remote currently holding the keyboard/mouse.
+    active: Option<usize>,
     vx: i32,
     vy: i32,
     cx: i32,
@@ -27,50 +31,59 @@ struct State {
     bounds: (i32, i32, i32, i32),
     held: Vec<(u16, bool)>,
     buttons_down: u32,
+    guard_cache: (Option<Instant>, bool),
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
-static TX: OnceLock<Sender<Message>> = OnceLock::new();
 
-fn send(m: Message) {
-    if let Some(tx) = TX.get() {
-        let _ = tx.send(m);
+impl State {
+    fn send(&self, m: Message) {
+        if let Some(tx) = self.active.and_then(|i| self.senders.get(i)) {
+            let _ = tx.send(m);
+        }
+    }
+    fn input(&self, ev: InputEvent) {
+        self.send(Message::Input(ev));
     }
 }
 
-fn input(ev: InputEvent) {
-    send(Message::Input(ev));
-}
-
+#[derive(Clone)]
 pub struct Controller;
 
 impl Controller {
-    pub fn set_connected(&self, c: bool) {
+    /// Install a new set of remotes (called whenever the config changes).
+    pub fn set_remotes(&self, generation: u64, cfg: Config, senders: Vec<Sender<Message>>) {
         if let Ok(mut g) = STATE.lock() {
             if let Some(st) = g.as_mut() {
-                st.connected = c;
+                if st.active.is_some() {
+                    leave_remote(st);
+                }
+                st.generation = generation;
+                st.connected = vec![false; senders.len()];
+                st.senders = senders;
+                st.cfg = cfg;
             }
         }
     }
 
-    /// Give control back to this PC (used on disconnect).
-    pub fn force_local(&self) {
+    pub fn set_connected(&self, generation: u64, idx: usize, connected: bool) {
         if let Ok(mut g) = STATE.lock() {
             if let Some(st) = g.as_mut() {
-                if st.remote {
+                if st.generation != generation || idx >= st.connected.len() {
+                    return;
+                }
+                st.connected[idx] = connected;
+                if !connected && st.active == Some(idx) {
                     leave_remote(st);
                 }
             }
         }
     }
+}
 
-    pub fn update_config(&self, cfg: Config) {
-        if let Ok(mut g) = STATE.lock() {
-            if let Some(st) = g.as_mut() {
-                st.cfg = cfg;
-            }
-        }
-    }
+/// True while a full-screen app or game is running (Windows' "do not disturb" detection).
+pub fn game_active_now() -> bool {
+    unsafe { SHQueryUserNotificationState().map(|s| matches!(s.0, 2 | 3 | 4)).unwrap_or(false) }
 }
 
 fn screen_state(cfg: Config) -> State {
@@ -81,8 +94,10 @@ fn screen_state(cfg: Config) -> State {
         let b = t + GetSystemMetrics(SM_CYVIRTUALSCREEN);
         State {
             cfg,
-            remote: false,
-            connected: false,
+            generation: 0,
+            senders: Vec::new(),
+            connected: Vec::new(),
+            active: None,
             vx: 0,
             vy: 0,
             cx: GetSystemMetrics(SM_CXSCREEN) / 2,
@@ -90,12 +105,12 @@ fn screen_state(cfg: Config) -> State {
             bounds: (l, t, r, b),
             held: Vec::new(),
             buttons_down: 0,
+            guard_cache: (None, false),
         }
     }
 }
 
-pub fn start(cfg: Config, tx: Sender<Message>) -> io::Result<Controller> {
-    let _ = TX.set(tx);
+pub fn start(cfg: Config) -> io::Result<Controller> {
     *STATE.lock().unwrap() = Some(screen_state(cfg));
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     std::thread::spawn(move || unsafe {
@@ -121,24 +136,58 @@ pub fn start(cfg: Config, tx: Sender<Message>) -> io::Result<Controller> {
 
 // ---- switching logic -------------------------------------------------------
 
-fn at_edge(st: &State, p: POINT) -> bool {
-    let (l, t, r, b) = st.bounds;
-    match st.cfg.remote_edge {
+fn edge_hit(b: (i32, i32, i32, i32), edge: Edge, p: POINT) -> bool {
+    let (l, t, r, bot) = b;
+    match edge {
         Edge::Right => p.x >= r - 1,
         Edge::Left => p.x <= l,
         Edge::Top => p.y <= t,
-        Edge::Bottom => p.y >= b - 1,
+        Edge::Bottom => p.y >= bot - 1,
     }
 }
 
-fn enter_remote(st: &mut State, p: POINT) {
-    let (l, t, r, b) = st.bounds;
-    let (rw, rh) = (st.cfg.remote_width as i32, st.cfg.remote_height as i32);
+/// Which connected remote (if any) sits on the edge the cursor just touched.
+fn find_target(st: &State, p: POINT) -> Option<usize> {
+    st.cfg
+        .remotes
+        .iter()
+        .enumerate()
+        .find(|(i, r)| r.enabled && st.connected.get(*i) == Some(&true) && edge_hit(st.bounds, r.edge, p))
+        .map(|(i, _)| i)
+}
+
+fn game_blocks(st: &mut State) -> bool {
+    if !st.cfg.game_guard {
+        return false;
+    }
+    if let (Some(t), v) = st.guard_cache {
+        if t.elapsed() < Duration::from_millis(400) {
+            return v;
+        }
+    }
+    let v = game_active_now();
+    st.guard_cache = (Some(Instant::now()), v);
+    v
+}
+
+/// Direction "into" the remote screen from the edge the cursor entered through.
+fn inward(edge: Edge) -> (i32, i32) {
+    match edge {
+        Edge::Right => (1, 0),
+        Edge::Left => (-1, 0),
+        Edge::Top => (0, -1),
+        Edge::Bottom => (0, 1),
+    }
+}
+
+fn enter_remote(st: &mut State, idx: usize, p: POINT) {
+    let r = st.cfg.remotes[idx].clone();
+    let (l, t, rr, b) = st.bounds;
+    let (rw, rh) = (r.width as i32, r.height as i32);
     let fy = ((p.y - t) as f32 / (b - t).max(1) as f32).clamp(0.0, 1.0);
-    let fx = ((p.x - l) as f32 / (r - l).max(1) as f32).clamp(0.0, 1.0);
-    let edge = st.cfg.remote_edge;
+    let fx = ((p.x - l) as f32 / (rr - l).max(1) as f32).clamp(0.0, 1.0);
     // (position along the edge, start of virtual cursor, "snap to corner" move, follow-up move)
-    let (frac, vx, vy, snap, follow) = match edge {
+    let (frac, vx, vy, snap, follow) = match r.edge {
         Edge::Right => (fy, 0, (fy * rh as f32) as i32, (-20000, -20000), (0, (fy * rh as f32) as i32)),
         Edge::Left => (fy, rw - 1, (fy * rh as f32) as i32, (20000, -20000), (0, (fy * rh as f32) as i32)),
         Edge::Top => (fx, (fx * rw as f32) as i32, rh - 1, (-20000, 20000), ((fx * rw as f32) as i32, 0)),
@@ -153,46 +202,60 @@ fn enter_remote(st: &mut State, p: POINT) {
             }
         });
     }
-    st.remote = true;
-    st.vx = vx;
-    st.vy = vy;
+    let anim = st.cfg.animation;
+    let animate_in = anim.on_enter && anim.style != AnimationStyle::None && anim.duration_ms > 0;
+    let dist = if animate_in { anim.distance_px as i32 } else { 0 };
+    let dir = inward(r.edge);
+    st.active = Some(idx);
+    st.vx = (vx + dir.0 * dist).clamp(0, rw - 1);
+    st.vy = (vy + dir.1 * dist).clamp(0, rh - 1);
     unsafe {
         let _ = SetCursorPos(st.cx, st.cy);
     }
-    send(Message::Enter { edge, pos: frac });
-    input(InputEvent::MouseMoveRel { dx: snap.0, dy: snap.1 });
-    input(InputEvent::MouseMoveRel { dx: follow.0, dy: follow.1 });
+    st.send(Message::Enter { edge: r.edge, pos: frac });
+    st.input(InputEvent::MouseMoveRel { dx: snap.0, dy: snap.1 });
+    st.input(InputEvent::MouseMoveRel { dx: follow.0, dy: follow.1 });
+    if animate_in {
+        animate_remote(st.senders[idx].clone(), anim, dir);
+    }
 }
 
 fn leave_remote(st: &mut State) {
-    let (l, t, r, b) = st.bounds;
-    let (rw, rh) = (st.cfg.remote_width.max(1) as f32, st.cfg.remote_height.max(1) as f32);
+    let Some(idx) = st.active else { return };
+    let Some(r) = st.cfg.remotes.get(idx).cloned() else {
+        st.active = None;
+        return;
+    };
+    let (l, t, rr, b) = st.bounds;
+    let (rw, rh) = (r.width.max(1) as f32, r.height.max(1) as f32);
     let fy = (st.vy as f32 / rh).clamp(0.0, 1.0);
     let fx = (st.vx as f32 / rw).clamp(0.0, 1.0);
-    let edge = st.cfg.remote_edge;
-    let (x, y) = match edge {
-        Edge::Right => (r - 2, t + (fy * (b - t) as f32) as i32),
+    let (x, y) = match r.edge {
+        Edge::Right => (rr - 2, t + (fy * (b - t) as f32) as i32),
         Edge::Left => (l + 1, t + (fy * (b - t) as f32) as i32),
-        Edge::Top => (l + (fx * (r - l) as f32) as i32, t + 1),
-        Edge::Bottom => (l + (fx * (r - l) as f32) as i32, b - 2),
+        Edge::Top => (l + (fx * (rr - l) as f32) as i32, t + 1),
+        Edge::Bottom => (l + (fx * (rr - l) as f32) as i32, b - 2),
     };
-    send(Message::Leave);
-    st.remote = false;
+    st.send(Message::Leave);
+    st.active = None;
     unsafe {
         let _ = SetCursorPos(x, y);
     }
-    animate(x, y, edge, st.cfg.animation);
+    if st.cfg.animation.on_leave {
+        animate_local(x, y, r.edge, st.cfg.animation);
+    }
 }
 
 fn move_remote(st: &mut State, dx: i32, dy: i32) {
     if dx == 0 && dy == 0 {
         return;
     }
-    input(InputEvent::MouseMoveRel { dx, dy });
+    let Some(r) = st.active.and_then(|i| st.cfg.remotes.get(i)).cloned() else { return };
+    st.input(InputEvent::MouseMoveRel { dx, dy });
     st.vx += dx;
     st.vy += dy;
-    let (rw, rh) = (st.cfg.remote_width as i32, st.cfg.remote_height as i32);
-    let back = match st.cfg.remote_edge {
+    let (rw, rh) = (r.width as i32, r.height as i32);
+    let back = match r.edge {
         Edge::Right => st.vx < 0,
         Edge::Left => st.vx >= rw,
         Edge::Top => st.vy >= rh,
@@ -206,7 +269,7 @@ fn move_remote(st: &mut State, dx: i32, dy: i32) {
     }
 }
 
-// ---- bounce animation -------------------------------------------------------
+// ---- animations ---------------------------------------------------------------
 
 fn ease(style: AnimationStyle, t: f32) -> f32 {
     match style {
@@ -240,16 +303,15 @@ fn ease(style: AnimationStyle, t: f32) -> f32 {
 }
 
 /// The cursor "drops" away from the edge it re-entered on, with the chosen easing.
-fn animate(x: i32, y: i32, edge: Edge, a: Animation) {
+fn animate_local(x: i32, y: i32, edge: Edge, a: Animation) {
     if a.style == AnimationStyle::None || a.duration_ms == 0 {
         return;
     }
     std::thread::spawn(move || {
-        let amp = 40.0f32;
         let start = Instant::now();
         loop {
             let t = (start.elapsed().as_millis() as f32 / a.duration_ms as f32).min(1.0);
-            let d = (amp * ease(a.style, t)) as i32;
+            let d = (a.distance_px as f32 * ease(a.style, t)) as i32;
             let (px, py) = match edge {
                 Edge::Right => (x - d, y),
                 Edge::Left => (x + d, y),
@@ -258,6 +320,30 @@ fn animate(x: i32, y: i32, edge: Edge, a: Animation) {
             };
             unsafe {
                 let _ = SetCursorPos(px, py);
+            }
+            if t >= 1.0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+    });
+}
+
+/// Same easing on the remote screen: the cursor is nudged in from the edge it arrived on.
+fn animate_remote(tx: Sender<Message>, a: Animation, dir: (i32, i32)) {
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        let mut prev = 0i32;
+        loop {
+            let t = (start.elapsed().as_millis() as f32 / a.duration_ms as f32).min(1.0);
+            let d = (a.distance_px as f32 * ease(a.style, t)).round() as i32;
+            let step = d - prev;
+            prev = d;
+            if step != 0 {
+                let ev = InputEvent::MouseMoveRel { dx: dir.0 * step, dy: dir.1 * step };
+                if tx.send(Message::Input(ev)).is_err() {
+                    break;
+                }
             }
             if t >= 1.0 {
                 break;
@@ -303,8 +389,8 @@ fn handle_mouse(msg: u32, info: &MSLLHOOKSTRUCT) -> bool {
         _ => None,
     };
     if let Some((button, pressed)) = button {
-        if st.remote {
-            input(InputEvent::MouseButton { button, pressed });
+        if st.active.is_some() {
+            st.input(InputEvent::MouseButton { button, pressed });
             return true;
         }
         if pressed {
@@ -316,24 +402,31 @@ fn handle_mouse(msg: u32, info: &MSLLHOOKSTRUCT) -> bool {
     }
     match msg {
         WM_MOUSEMOVE => {
-            if st.remote {
+            if st.active.is_some() {
                 let (dx, dy) = (info.pt.x - st.cx, info.pt.y - st.cy);
                 move_remote(st, dx, dy);
                 true
-            } else if st.connected && st.buttons_down == 0 && at_edge(st, info.pt) {
-                enter_remote(st, info.pt);
-                true
+            } else if st.buttons_down == 0 {
+                match find_target(st, info.pt) {
+                    // A full-screen app/game is running: stay on this PC.
+                    Some(_) if game_blocks(st) => false,
+                    Some(i) => {
+                        enter_remote(st, i, info.pt);
+                        true
+                    }
+                    None => false,
+                }
             } else {
                 false
             }
         }
         WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
-            if st.remote {
+            if st.active.is_some() {
                 let notches = (info.mouseData >> 16) as i16 as i32 / 120;
                 if msg == WM_MOUSEWHEEL {
-                    input(InputEvent::Scroll { dx: 0, dy: notches });
+                    st.input(InputEvent::Scroll { dx: 0, dy: notches });
                 } else {
-                    input(InputEvent::Scroll { dx: notches, dy: 0 });
+                    st.input(InputEvent::Scroll { dx: notches, dy: 0 });
                 }
                 true
             } else {
@@ -381,7 +474,7 @@ fn handle_key(msg: u32, info: &KBDLLHOOKSTRUCT) -> bool {
     let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     let ext = info.flags.0 & 0x01 != 0;
     let scan = info.scanCode as u16;
-    if st.remote {
+    if st.active.is_some() {
         if let Some(hid) = scan_to_hid(scan, ext) {
             if hid == st.cfg.escape_hid {
                 if down {
@@ -389,7 +482,7 @@ fn handle_key(msg: u32, info: &KBDLLHOOKSTRUCT) -> bool {
                 }
                 return true;
             }
-            input(InputEvent::Key { code: hid, pressed: down });
+            st.input(InputEvent::Key { code: hid, pressed: down });
         }
         return true;
     }

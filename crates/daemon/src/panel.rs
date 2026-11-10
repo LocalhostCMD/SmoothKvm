@@ -5,13 +5,15 @@
 //! custom headers cross-origin without a preflight, which we never approve), strict
 //! CSP, no CORS headers, request bodies capped at 64 KiB.
 use crate::store::{self, Peers};
+use crate::{capture_win, daemon, shared};
 use kvm_protocol::secure::to_hex;
-use kvm_protocol::Config;
-use serde_json::json;
+use kvm_protocol::{Config, DisplayAction};
+use serde_json::{json, Value};
 use std::io::{self, Read};
+use std::sync::Arc;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-const PORT: u16 = 24801;
+pub const PORT: u16 = 24801;
 const HTML: &str = include_str!("panel.html");
 
 fn header(name: &str, value: &str) -> Header {
@@ -33,33 +35,28 @@ fn reply(req: Request, code: u16, ctype: &str, body: String) {
     let _ = req.respond(resp);
 }
 
-fn json_reply(req: Request, code: u16, v: serde_json::Value) {
+fn json_reply(req: Request, code: u16, v: Value) {
     reply(req, code, "application/json", v.to_string());
 }
 
-pub fn run(open: bool) -> io::Result<()> {
-    let token = store::panel_token()?;
-    let server =
-        Server::http(("127.0.0.1", PORT)).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-    let url = format!("http://127.0.0.1:{PORT}/#{token}");
-    println!("config panel: {url}\n(keep this link private; press Ctrl+C to close the panel)");
-    if open {
-        open_browser(&url);
-    }
+pub fn bind() -> io::Result<Server> {
+    Server::http(("127.0.0.1", PORT)).map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, e.to_string()))
+}
+
+pub fn serve(server: Server, token: String, ident: Arc<store::Identity>) {
+    let token = Arc::new(token);
     for req in server.incoming_requests() {
-        handle(req, &token);
+        let (token, ident) = (token.clone(), ident.clone());
+        // One thread per request: starting a display can take several seconds.
+        std::thread::spawn(move || handle(req, &token, &ident));
     }
-    Ok(())
 }
 
-fn open_browser(url: &str) {
-    #[cfg(windows)]
-    let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
-    #[cfg(not(windows))]
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+fn str_field(v: &Value, k: &str) -> String {
+    v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
 
-fn handle(mut req: Request, token: &str) {
+fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
     let host_ok = req.headers().iter().any(|h| {
         h.field.equiv("Host") && {
             let v = h.value.as_str();
@@ -74,6 +71,9 @@ fn handle(mut req: Request, token: &str) {
     if path == "/" && method == Method::Get {
         return reply(req, 200, "text/html; charset=utf-8", HTML.to_string());
     }
+    if path == "/ping" {
+        return json_reply(req, 200, json!({"ok": true}));
+    }
     let authed = req.headers().iter().any(|h| h.field.equiv("X-Token") && h.value.as_str() == token);
     if !authed {
         return json_reply(req, 401, json!({"error": "unauthorized"}));
@@ -82,17 +82,29 @@ fn handle(mut req: Request, token: &str) {
     if method == Method::Post {
         let _ = req.as_reader().take(64 * 1024).read_to_string(&mut body);
     }
+    let data: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     match (path.as_str(), method) {
         ("/api/state", Method::Get) => {
-            let me = store::Identity::load_or_create().map(|i| store::short(&to_hex(&i.public))).unwrap_or_default();
+            let me = store::short(&to_hex(&ident.public));
             let peers: Vec<_> = Peers::load()
                 .peers
                 .iter()
                 .map(|p| json!({"name": p.name, "key": p.key, "short": store::short(&p.key)}))
                 .collect();
-            json_reply(req, 200, json!({"config": store::load_config(), "peers": peers, "me": me}));
+            json_reply(
+                req,
+                200,
+                json!({
+                    "config": store::load_config(),
+                    "status": shared::statuses(),
+                    "pairing": shared::pending_pair(),
+                    "game_active": capture_win::game_active_now(),
+                    "peers": peers,
+                    "me": me,
+                }),
+            );
         }
-        ("/api/config", Method::Post) => match serde_json::from_str::<Config>(&body) {
+        ("/api/config", Method::Post) => match serde_json::from_value::<Config>(data) {
             Ok(cfg) => match cfg.validate() {
                 Ok(()) => match store::save_config(&cfg) {
                     Ok(()) => json_reply(req, 200, json!({"ok": true})),
@@ -103,16 +115,48 @@ fn handle(mut req: Request, token: &str) {
             Err(e) => json_reply(req, 400, json!({"error": e.to_string()})),
         },
         ("/api/peers/remove", Method::Post) => {
-            let key = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v.get("key").and_then(|k| k.as_str().map(String::from)))
-                .unwrap_or_default();
+            let key = str_field(&data, "key");
             let mut peers = Peers::load();
             peers.peers.retain(|p| p.key != key);
             match peers.save() {
                 Ok(()) => json_reply(req, 200, json!({"ok": true})),
                 Err(e) => json_reply(req, 500, json!({"error": e.to_string()})),
             }
+        }
+        ("/api/pair", Method::Post) => {
+            shared::request_pair(&str_field(&data, "name"));
+            json_reply(req, 200, json!({"ok": true}));
+        }
+        ("/api/pair/answer", Method::Post) => {
+            shared::answer_pair(data.get("accept").and_then(|v| v.as_bool()).unwrap_or(false));
+            json_reply(req, 200, json!({"ok": true}));
+        }
+        ("/api/display", Method::Post) => {
+            let name = str_field(&data, "name");
+            let (w, h) = (
+                data.get("width").and_then(|v| v.as_u64()).unwrap_or(1920) as u32,
+                data.get("height").and_then(|v| v.as_u64()).unwrap_or(1080) as u32,
+            );
+            let action = match str_field(&data, "action").as_str() {
+                "start" => DisplayAction::Start { width: w, height: h },
+                "stop" => DisplayAction::Stop,
+                _ => DisplayAction::Status,
+            };
+            match daemon::control_display(&name, ident, action) {
+                Ok((running, detail)) => json_reply(req, 200, json!({"running": running, "detail": detail})),
+                Err(e) => json_reply(req, 502, json!({"error": e.to_string()})),
+            }
+        }
+        ("/api/viewer", Method::Post) => match daemon::ensure_tunnel(&str_field(&data, "name"), ident.clone()) {
+            Ok(port) => json_reply(req, 200, json!({"port": port, "launched": daemon::launch_viewer(port)})),
+            Err(e) => json_reply(req, 502, json!({"error": e.to_string()})),
+        },
+        ("/api/quit", Method::Post) => {
+            json_reply(req, 200, json!({"ok": true}));
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                std::process::exit(0);
+            });
         }
         _ => json_reply(req, 404, json!({"error": "not found"})),
     }
