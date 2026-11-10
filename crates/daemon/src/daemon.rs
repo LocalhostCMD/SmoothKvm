@@ -75,6 +75,7 @@ fn remote_thread(
     ident: Arc<Identity>,
     ctl: capture_win::Controller,
 ) {
+    let mut last_err = String::new();
     while GEN.load(Ordering::SeqCst) == generation {
         if r.addr.trim().is_empty() {
             shared::set_status(&r.name, "offline", "no address set");
@@ -86,6 +87,8 @@ fn remote_thread(
         match net::connect(&r.addr, &ident, pin.as_deref(), &r.name) {
             Ok(mut conn) => {
                 shared::set_status(&r.name, "connected", "");
+                shared::info(&format!("Connected to {} ({})", r.name, r.addr));
+                last_err.clear();
                 while rx.try_recv().is_ok() {}
                 ctl.set_connected(generation, idx, true);
                 let end = loop {
@@ -124,10 +127,16 @@ fn remote_thread(
                 };
                 ctl.set_connected(generation, idx, false);
                 shared::set_status(&r.name, "offline", &end.to_string());
+                shared::warn(&format!("Connection to {} ended: {end}", r.name));
             }
             Err(e) => {
                 let msg = e.to_string();
                 let state = if msg.contains("not paired") { "not_paired" } else { "offline" };
+                if msg != last_err {
+                    if state == "not_paired" { shared::alert(&format!("{} refused us: not paired (or its key changed). Pair again only if you expect this.", r.name)); }
+                    else { shared::warn(&format!("Cannot reach {}: {msg}", r.name)); }
+                    last_err = msg.clone();
+                }
                 shared::set_status(&r.name, state, &msg);
             }
         }

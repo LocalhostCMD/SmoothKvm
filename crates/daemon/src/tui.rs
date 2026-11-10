@@ -37,6 +37,7 @@ enum Msg {
 }
 
 const SENDER_CMDS: &[(&str, &str)] = &[
+    ("/log", "/log [alerts]   recent activity and security alerts"),
     ("/status", "show screens, connections and settings"),
     ("/screens", "list your screens"),
     ("/add", "/add <name> <left|right|top|bottom> <host:port> [WxH]"),
@@ -62,6 +63,7 @@ const SENDER_CMDS: &[(&str, &str)] = &[
 ];
 
 const RECEIVER_CMDS: &[(&str, &str)] = &[
+    ("/log", "/log [alerts]   recent activity and security alerts"),
     ("/status", "show connections and settings"),
     ("/pair", "/pair [seconds]   open pairing and show the 8-digit PIN to type on the controlling PC"),
     ("/devices", "list paired devices"),
@@ -185,6 +187,22 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             let open = s["pairing_open_secs"].as_u64().unwrap_or(0);
             out.push((if open > 0 { Kind::Info } else { Kind::Dim }, if open > 0 { format!("pairing is OPEN for {open}s") } else { "pairing is closed (use /pair to allow a new device)".into() }));
             out.push((Kind::Dim, format!("display: {}", s["display"]["detail"].as_str().unwrap_or("?"))));
+            Ok(out)
+        }
+        ("/log", _) => {
+            let only_alerts = a.first().map(|s| s.starts_with("alert")).unwrap_or(false);
+            let r = c.get("/api/events?after=0")?;
+            let mut out = vec![(Kind::Head, format!("Activity log ({} security alert(s) so far)", r["alerts"]))];
+            let evs = r["events"].as_array().cloned().unwrap_or_default();
+            let shown: Vec<_> = evs.iter().filter(|e| !only_alerts || e["level"] == "alert").collect();
+            for e in shown.iter().rev().take(15).rev() {
+                let kind = match e["level"].as_str() { Some("alert") => Kind::Bad, Some("warn") => Kind::Info, _ => Kind::Dim };
+                let t = e["t"].as_u64().unwrap_or(0) % 86_400;
+                out.push((kind, format!("{:02}:{:02}:{:02} UTC  {}", t / 3600, t % 3600 / 60, t % 60, e["text"].as_str().unwrap_or(""))));
+            }
+            if shown.is_empty() {
+                out.push((Kind::Dim, "nothing logged yet".into()));
+            }
             Ok(out)
         }
         ("/screens", true) => Ok(remote_lines(&state_of(c)?)),

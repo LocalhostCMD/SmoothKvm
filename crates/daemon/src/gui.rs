@@ -84,8 +84,9 @@ fn open_window(target: &tao::event_loop::EventLoopWindowTarget<UserEvent>, ctx: 
     Ok((window, webview))
 }
 
-pub fn run(show: bool) -> io::Result<()> {
+pub fn run(_show: bool) -> io::Result<()> {
     daemon::start_backend()?;
+    crate::shared::info(&format!("SmoothKvm {} started. It runs only while this window/tray icon is open; closing the window quits it.", crate::VERSION));
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let _ = PROXY.set(Mutex::new(event_loop.create_proxy()));
     {
@@ -114,14 +115,19 @@ pub fn run(show: bool) -> io::Result<()> {
     let mut ctx = WebContext::new(Some(store::config_dir().join("webview")));
     let mut window: Option<(Window, WebView)> = None;
     let mut shown_paused = false;
-    if show {
-        post(UserEvent::Show);
-    }
+    let mut shown_alerts = 0usize;
+    // Always open the window: the app is never running invisibly.
+    post(UserEvent::Show);
     event_loop.run(move |event, target, flow| {
         *flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(500));
         match event {
             // Keep the tray in sync (the triple-press shortcut can change the state too).
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                let alerts = crate::shared::alert_count();
+                if alerts != shown_alerts {
+                    shown_alerts = alerts;
+                    let _ = tray.set_tooltip(Some(if alerts > 0 { format!("SmoothKvm - {alerts} security alert(s), open the app to see them") } else { "SmoothKvm".to_string() }));
+                }
                 let paused = capture_win::is_paused();
                 if paused != shown_paused {
                     shown_paused = paused;
@@ -141,7 +147,10 @@ pub fn run(show: bool) -> io::Result<()> {
                     Err(e) => eprintln!("cannot open window: {e}"),
                 },
             },
-            Event::UserEvent(UserEvent::Quit) => *flow = ControlFlow::Exit,
+            Event::UserEvent(UserEvent::Quit) => {
+                shutdown();
+                *flow = ControlFlow::Exit
+            }
             Event::UserEvent(UserEvent::Menu(e)) => {
                 if e.id == *open_item.id() {
                     post(UserEvent::Show);
@@ -152,15 +161,28 @@ pub fn run(show: bool) -> io::Result<()> {
                         capture_win::Controller.emergency_stop();
                     }
                 } else if e.id == *quit_item.id() {
+                    shutdown();
                     *flow = ControlFlow::Exit;
                 }
             }
             Event::UserEvent(UserEvent::Tray(TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. })) => {
                 post(UserEvent::Show);
             }
-            // Closing the window frees it completely; the app keeps running in the tray.
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => window = None,
+            // Closing the window QUITS the app: nothing keeps running in the background.
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+                shutdown();
+                *flow = ControlFlow::Exit;
+            }
             _ => {}
         }
     })
+}
+
+/// Stop everything cleanly: release every key/button on the other computers, then let the process end
+/// (which also removes the keyboard/mouse hooks and closes every connection and listener).
+fn shutdown() {
+    crate::shared::info("SmoothKvm is quitting: releasing all keys and closing every connection");
+    capture_win::Controller.emergency_stop();
+    std::thread::sleep(Duration::from_millis(250));
+    std::process::exit(0);
 }

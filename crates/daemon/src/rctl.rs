@@ -45,6 +45,10 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
     }
     let data = if method == Method::Post { read_json(&mut req) } else { serde_json::Value::Null };
     match (path.as_str(), method) {
+        ("/api/events", Method::Get) => {
+            let after = req.url().split("after=").nth(1).and_then(|s| s.split('&').next()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            json_reply(req, 200, json!({"events": shared::events(after), "alerts": shared::alert_count()}))
+        }
         ("/api/state", Method::Get) => {
             let peers: Vec<_> = Peers::load()
                 .peers
@@ -76,6 +80,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
             let key = str_field(&data, "key");
             let mut peers = Peers::load();
             peers.peers.retain(|p| p.key != key);
+            shared::warn(&format!("Device removed from the trusted list (id {})", store::short(&key)));
             match peers.save() {
                 Ok(()) => json_reply(req, 200, json!({"ok": true})),
                 Err(e) => json_reply(req, 500, json!({"error": e.to_string()})),

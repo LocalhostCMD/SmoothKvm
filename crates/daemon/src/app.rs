@@ -43,8 +43,9 @@ pub fn start(show: bool) -> io::Result<bool> {
         std::fs::create_dir_all(store::config_dir())?;
         std::fs::File::create(store::config_dir().join("smoothkvm.log"))
     })?;
+    let _ = show; // the app always opens its window: it never runs hidden
     Command::new(exe)
-        .args(if show { vec!["daemon", "--show"] } else { vec!["daemon"] })
+        .args(["daemon", "--show"])
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
@@ -161,4 +162,32 @@ pub fn uninstall() -> io::Result<()> {
     )?;
     println!("Removed autostart and PATH entry. You can delete {} and {}.", dir.display(), store::config_dir().display());
     Ok(())
+}
+
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+pub fn autostart_enabled() -> bool {
+    Command::new("reg")
+        .args(["query", RUN_KEY, "/v", "SmoothKvm"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Open the SmoothKvm window when you sign in to Windows (it is never started hidden).
+pub fn set_autostart(on: bool) -> io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let mut c = Command::new("reg");
+    if on {
+        c.args(["add", RUN_KEY, "/v", "SmoothKvm", "/t", "REG_SZ", "/d", &format!("\"{}\" start", exe.display()), "/f"]);
+    } else {
+        c.args(["delete", RUN_KEY, "/v", "SmoothKvm", "/f"]);
+    }
+    let ok = c.creation_flags(CREATE_NO_WINDOW).output()?.status.success();
+    if ok || !on {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::Other, "could not change the sign-in setting"))
+    }
 }

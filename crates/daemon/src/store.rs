@@ -42,7 +42,7 @@ fn write_private(path: &PathBuf, contents: &str) -> io::Result<()> {
 /// Secrets must never be readable by other accounts: tighten them if something (a backup, a copy,
 /// a loose umask) widened the permissions.
 #[cfg(unix)]
-fn harden(path: &PathBuf) {
+pub(crate) fn harden(path: &PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     if let Ok(m) = fs::metadata(path) {
         if m.permissions().mode() & 0o077 != 0 {
@@ -51,7 +51,7 @@ fn harden(path: &PathBuf) {
     }
 }
 #[cfg(not(unix))]
-fn harden(_path: &PathBuf) {}
+pub(crate) fn harden(_path: &PathBuf) {}
 
 pub struct Identity {
     pub private: Vec<u8>,

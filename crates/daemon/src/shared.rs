@@ -75,6 +75,7 @@ pub fn open_pairing(secs: u64) -> String {
         *g = Some(pin.clone());
     }
     PAIRING_UNTIL.store(now_secs() + secs, Ordering::SeqCst);
+    info(&format!("Pairing opened for {secs} seconds (one device, one try)"));
     pin
 }
 
@@ -173,4 +174,68 @@ impl Drop for PreauthSlot {
             }
         }
     }
+}
+
+// ---- activity and security log ----
+// Everything the app does that you might want to know about is written here: shown live in the app
+// (panel and terminal) and appended to events.log in the config folder. Levels: info, warn, alert.
+// "alert" = something that looks like an attack or a failed/refused attempt to get in.
+
+#[derive(Clone, Serialize)]
+pub struct Event {
+    pub seq: u64,
+    pub t: u64,
+    pub level: &'static str,
+    pub text: String,
+}
+
+const MAX_EVENTS: usize = 400;
+static EVENTS: Mutex<std::collections::VecDeque<Event>> = Mutex::new(std::collections::VecDeque::new());
+static EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn persist(line: &str) {
+    use std::io::Write;
+    let path = crate::store::config_dir().join("events.log");
+    if std::fs::metadata(&path).map(|m| m.len() > 512 * 1024).unwrap_or(false) {
+        let _ = std::fs::rename(&path, crate::store::config_dir().join("events.old.log"));
+    }
+    let fresh = !path.exists();
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{line}");
+        if fresh {
+            crate::store::harden(&path);
+        }
+    }
+}
+
+pub fn log(level: &'static str, text: &str) {
+    let text = clean(text);
+    let t = now_secs();
+    let seq = EVENT_SEQ.fetch_add(1, Ordering::SeqCst);
+    persist(&format!("{t} {} {text}", level.to_uppercase()));
+    if let Ok(mut g) = EVENTS.lock() {
+        if g.len() >= MAX_EVENTS {
+            g.pop_front();
+        }
+        g.push_back(Event { seq, t, level, text });
+    }
+}
+
+pub fn info(text: &str) {
+    log("info", text)
+}
+pub fn warn(text: &str) {
+    log("warn", text)
+}
+pub fn alert(text: &str) {
+    log("alert", text)
+}
+
+/// Events newer than `after` (0 = everything still in memory).
+pub fn events(after: u64) -> Vec<Event> {
+    EVENTS.lock().map(|g| g.iter().filter(|e| e.seq > after).cloned().collect()).unwrap_or_default()
+}
+
+pub fn alert_count() -> usize {
+    EVENTS.lock().map(|g| g.iter().filter(|e| e.level == "alert").count()).unwrap_or(0)
 }

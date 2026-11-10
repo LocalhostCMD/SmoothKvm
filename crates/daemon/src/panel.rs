@@ -55,6 +55,10 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
     }
     let data: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     match (path.as_str(), method) {
+        ("/api/events", Method::Get) => {
+            let after = req.url().split("after=").nth(1).and_then(|s| s.split('&').next()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            json_reply(req, 200, json!({"events": shared::events(after), "alerts": shared::alert_count()}))
+        }
         ("/api/state", Method::Get) => {
             let me = store::short(&to_hex(&ident.public));
             let peers: Vec<_> = Peers::load()
@@ -83,7 +87,10 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
         ("/api/config", Method::Post) => match serde_json::from_value::<Config>(data) {
             Ok(cfg) => match cfg.validate() {
                 Ok(()) => match store::save_config(&cfg) {
-                    Ok(()) => json_reply(req, 200, json!({"ok": true})),
+                    Ok(()) => {
+                        shared::info("Settings changed");
+                        json_reply(req, 200, json!({"ok": true}))
+                    }
                     Err(e) => json_reply(req, 500, json!({"error": e.to_string()})),
                 },
                 Err(e) => json_reply(req, 400, json!({"error": e})),
@@ -94,6 +101,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
             let key = str_field(&data, "key");
             let mut peers = Peers::load();
             peers.peers.retain(|p| p.key != key);
+            shared::warn(&format!("Device removed from the trusted list (id {})", store::short(&key)));
             match peers.save() {
                 Ok(()) => json_reply(req, 200, json!({"ok": true})),
                 Err(e) => json_reply(req, 500, json!({"error": e.to_string()})),
@@ -106,6 +114,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                 return json_reply(req, 400, json!({"error": "the PIN is 8 digits"}));
             }
             shared::request_pair(&str_field(&data, "name"), &pin);
+            shared::info(&format!("Pairing with \"{}\" requested", str_field(&data, "name")));
             json_reply(req, 200, json!({"ok": true}));
         }
         // Let a new computer pair with THIS one (so it can control this PC): returns the PIN to type there.
@@ -116,6 +125,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
         }
         ("/api/display", Method::Post) => {
             let name = str_field(&data, "name");
+            shared::info(&format!("Remote display on \"{name}\": {}", str_field(&data, "action")));
             let (w, h) = (
                 data.get("width").and_then(|v| v.as_u64()).unwrap_or(1920) as u32,
                 data.get("height").and_then(|v| v.as_u64()).unwrap_or(1080) as u32,
@@ -148,6 +158,17 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                     json_reply(req, 200, json!({"ok": true}))
                 }
                 Err(e) => json_reply(req, 400, json!({"error": e})),
+            }
+        }
+        ("/api/autostart", Method::Get) => json_reply(req, 200, json!({"on": crate::app::autostart_enabled()})),
+        ("/api/autostart", Method::Post) => {
+            let on = data.get("on").and_then(|v| v.as_bool()).unwrap_or(false);
+            match crate::app::set_autostart(on) {
+                Ok(()) => {
+                    shared::info(if on { "Start with Windows: on" } else { "Start with Windows: off" });
+                    json_reply(req, 200, json!({"on": on}))
+                }
+                Err(e) => json_reply(req, 500, json!({"error": e.to_string()})),
             }
         }
         ("/api/show", Method::Post) => {

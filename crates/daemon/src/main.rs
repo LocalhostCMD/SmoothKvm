@@ -135,7 +135,10 @@ fn handle_session(stream: TcpStream, ident: &Identity) -> io::Result<()> {
     let ip = stream.peer_addr()?.ip();
     let peer = ip.to_string();
     // Strangers get a tiny budget (count + time) until they have proven who they are.
-    let slot = shared::preauth_enter(ip).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "too many unauthenticated connections"))?;
+    let Some(slot) = shared::preauth_enter(ip) else {
+        shared::alert(&format!("Refused {peer}: too many unauthenticated connections at once (possible flood)"));
+        return Err(io::Error::new(io::ErrorKind::Other, "too many unauthenticated connections"));
+    };
     let pin = shared::pairing_pin();
     let est = match secure::accept(stream, &ident.private, pin.as_deref()) {
         Ok(e) => e,
@@ -143,6 +146,9 @@ fn handle_session(stream: TcpStream, ident: &Identity) -> io::Result<()> {
             // A failed attempt at the pairing PIN burns it: a guessed or captured PIN is never usable later.
             if pin.is_some() && e.kind() == io::ErrorKind::PermissionDenied {
                 shared::burn_pairing();
+                shared::alert(&format!("Pairing attempt from {peer} FAILED (wrong PIN). The PIN was destroyed; open pairing again if that was you."));
+            } else {
+                shared::alert(&format!("Connection from {peer} was rejected during the secure handshake: {e}"));
             }
             return Err(e);
         }
@@ -151,11 +157,20 @@ fn handle_session(stream: TcpStream, ident: &Identity) -> io::Result<()> {
         shared::burn_pairing(); // single use
     }
     let mut conn = est.conn;
-    net::authorize(&mut conn, &est.remote_key, est.pin_paired, &peer)?;
+    let who = store::short(&secure::to_hex(&est.remote_key));
+    if let Err(e) = net::authorize(&mut conn, &est.remote_key, est.pin_paired, &peer) {
+        shared::alert(&format!("Unpaired device {peer} (id {who}) tried to connect and was refused"));
+        return Err(e);
+    }
+    if est.pin_paired {
+        shared::info(&format!("New device paired: {peer} (id {who})"));
+    }
     drop(slot);
     let id = shared::session_start(&peer);
+    shared::info(&format!("{peer} (id {who}) is now controlling this PC"));
     let result = session_loop(conn, &peer);
     shared::session_end(id);
+    shared::info(&format!("{peer} stopped controlling this PC"));
     result
 }
 
@@ -170,6 +185,7 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str) -> io::Result<()> {
             Ok(Message::OpenDisplay) if first => {
                 // Paired peers may reach the local VNC server (127.0.0.1:5900 only, never anything else).
                 println!("display tunnel opened by {peer}");
+                shared::info(&format!("{peer} opened the remote display"));
                 conn.set_timeouts(None, Some(Duration::from_secs(30)))?;
                 let local = TcpStream::connect_timeout(&"127.0.0.1:5900".parse().unwrap(), Duration::from_secs(3))?;
                 net::pump(local, conn)?;
@@ -178,6 +194,7 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str) -> io::Result<()> {
             }
             Ok(Message::DisplayCmd(action)) if first => {
                 println!("display command from {peer}: {action:?}");
+                shared::info(&format!("{peer} sent a display command: {action:?}"));
                 let (running, detail) = display_command(action);
                 conn.send(&Message::DisplayState { running, detail })?;
                 return Ok(());
@@ -209,6 +226,7 @@ fn serve(addr: &str, pair: bool, ctl_server: bool) -> io::Result<()> {
     let ident = Arc::new(Identity::load_or_create()?);
     let listener = TcpListener::bind(addr)?;
     println!("SmoothKvm receiver {VERSION} listening on {addr} (device id {})", store::short(&secure::to_hex(&ident.public)));
+    shared::info(&format!("Listening for paired controllers on {addr}. Unpaired connections are refused and logged as alerts."));
     if ctl_server {
         let token = store::panel_token()?;
         let server = rctl::bind()?;

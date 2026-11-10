@@ -53,11 +53,19 @@ button.stop{background:var(--bad);font-weight:600}
 #curve{width:100%;max-width:300px;height:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;margin-top:10px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .chips button{padding:4px 10px;font-size:13px}
+.evlist{margin-top:10px;max-height:300px;overflow:auto;font:12.5px/1.5 ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.ev{padding:4px 10px;border-top:1px solid var(--line);word-break:break-word}.ev:first-child{border-top:0}
+.ev .t{color:var(--mute);margin-right:8px}.ev.warn{color:var(--warn)}.ev.alert{color:var(--bad);font-weight:600}
+.badge.red{background:#c0362c22;color:var(--bad)}
+.honest{margin:0 0 6px;padding-left:20px;color:var(--ink)}.honest li{margin:5px 0}
+#alertbar{display:none;background:#c0362c22;border:1px solid var(--bad);color:var(--bad);padding:10px 14px;border-radius:10px;margin-bottom:14px}
+#alertbar button{margin-left:10px}
 </style>
 </head>
 <body>
 <main>
 <header><h1>SmoothKvm</h1><div style="display:flex;gap:10px;align-items:center"><span class="badge" id="game">Game mode: off</span><button class="stop" id="estop">Emergency stop</button></div></header>
+<div id="alertbar"><b>Security alert:</b> <span id="alerttext"></span> <button class="ghost" id="alertok">Dismiss</button></div>
 <div id="pausedbar"><b>Stopped.</b> Screen switching is paused and every held key and mouse button was released. <button class="ghost" id="resume">Resume</button></div>
 <p class="sub">One keyboard and mouse across all your screens. Everything between your computers is encrypted, and only paired devices are accepted.</p>
 
@@ -105,6 +113,27 @@ button.stop{background:var(--bad);font-weight:600}
   <label class="check"><input id="recv" type="checkbox"> Let paired computers control this PC (listens on the port set in the config, default 24800)</label>
   <div class="btns"><button class="ghost" id="allow">Allow a new device to pair (2 minutes)</button></div>
   <div class="hint" id="recvinfo">Off. Nothing is listening.</div>
+</div>
+
+<div class="card">
+  <h2>Activity and security log <span class="badge" id="alertbadge" style="display:none"></span></h2>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <select id="evfilter" style="width:auto"><option value="all">Everything</option><option value="warn">Warnings and alerts</option><option value="alert">Security alerts only</option></select>
+    <button class="ghost" id="evcopy">Copy log</button>
+    <span class="pill">Also saved to events.log in the SmoothKvm settings folder.</span>
+  </div>
+  <div id="evlist" class="evlist"><div class="hint">Nothing yet.</div></div>
+</div>
+
+<div class="card">
+  <h2>What this app does (and doesn't)</h2>
+  <ul class="honest">
+    <li>It runs <b>only while this window or its tray icon is open</b>. Closing the window quits it completely.</li>
+    <li>It never connects to the internet by itself, has no accounts, no telemetry and no auto-update. It only talks to the addresses you add above.</li>
+    <li>It listens on the network <b>only</b> if you turn on "Let paired computers control this PC". Anything that tries to connect without being paired is refused and shown as a security alert here.</li>
+    <li>Everything between computers is encrypted. Your device key is encrypted by Windows and never leaves this PC.</li>
+  </ul>
+  <label class="check"><input id="autostart" type="checkbox"> Open SmoothKvm when I sign in to Windows (the window opens, it never starts hidden)</label>
 </div>
 
 <div class="card">
@@ -288,6 +317,27 @@ function renderPeers(list){
   });
 }
 let pairTarget=null;function askPin(name){ pairTarget=name; $('mtitle').textContent='Pair with '+name; $('pinbox').value=''; $('modal').style.display='flex'; $('pinbox').focus(); }$('mno').onclick=()=>{ $('modal').style.display='none'; };$('myes').onclick=async()=>{ const pin=$('pinbox').value.trim(); try{ await api('/api/pair',{name:pairTarget,pin}); $('modal').style.display='none'; say('Pairing with '+pairTarget+'...',true); }catch(e){ say(e.message,false); } };
+let evAfter=0, evAll=[], seenAlerts=0;
+function fmtT(t){ const d=new Date(t*1000); return d.toLocaleTimeString([], {hour12:false}); }
+function renderEvents(){
+  const f=$('evfilter').value, box=$('evlist');
+  const list=evAll.filter(e=> f==='all' || (f==='warn' && e.level!=='info') || (f==='alert' && e.level==='alert')).slice().reverse().slice(0,200);
+  box.textContent='';
+  if(!list.length){ const d=document.createElement('div'); d.className='hint'; d.textContent='Nothing to show.'; box.appendChild(d); return; }
+  list.forEach(e=>{ const d=document.createElement('div'); d.className='ev '+e.level; const t=document.createElement('span'); t.className='t'; t.textContent=fmtT(e.t)+(e.level==='alert'?'  ALERT':e.level==='warn'?'  warn':''); d.append(t, document.createTextNode(e.text)); box.appendChild(d); });
+}
+async function pollEvents(){
+  try{
+    const r=await api('/api/events?after='+evAfter);
+    if(r.events.length){ evAll=evAll.concat(r.events).slice(-400); evAfter=r.events[r.events.length-1].seq; renderEvents();
+      const al=r.events.filter(e=>e.level==='alert'); if(al.length){ $('alerttext').textContent=al[al.length-1].text; $('alertbar').style.display='block'; } }
+    const b=$('alertbadge'); if(r.alerts){ b.textContent=r.alerts+' alert'+(r.alerts>1?'s':''); b.className='badge red'; b.style.display=''; } else b.style.display='none';
+  }catch(e){}
+}
+$('alertok').onclick=()=>{ $('alertbar').style.display='none'; };
+$('evfilter').onchange=renderEvents;
+$('evcopy').onclick=async()=>{ try{ await navigator.clipboard.writeText(evAll.map(e=>new Date(e.t*1000).toISOString()+' '+e.level.toUpperCase()+' '+e.text).join('\n')); say('Log copied',true);}catch(e){ say('Could not copy',false);} };
+async function loadAuto(){ try{ const r=await api('/api/autostart'); $('autostart').checked=!!r.on; $('autostart').onchange=async()=>{ try{ await api('/api/autostart',{on:$('autostart').checked}); say('Saved',true);}catch(e){ say(e.message,false); $('autostart').checked=!$('autostart').checked; } }; }catch(e){} }
 function render(){ renderMap(); renderDetail(); }
 async function poll(){
   try{
@@ -303,7 +353,7 @@ async function poll(){
   }catch(e){ say('Lost connection to SmoothKvm: '+e.message, false); }
 }
 async function init(){
-  try{ const s=await api('/api/state'); cfg=s.config; status=s.status||{}; fillSimple(); bindSimple(); render(); poll(); setInterval(poll,1500); }
+  try{ const s=await api('/api/state'); cfg=s.config; status=s.status||{}; fillSimple(); bindSimple(); render(); poll(); setInterval(poll,1500); pollEvents(); setInterval(pollEvents,1500); loadAuto(); }
   catch(e){ say('Could not load: '+e.message+'  (open this page with the SmoothKvm command)', false); }
 }
 init();

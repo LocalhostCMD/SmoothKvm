@@ -43,3 +43,6 @@ The PIN is mixed into the key exchange, works for one attempt only, and any wron
 
 ## Verifying downloads
 Releases include `SHA256SUMS` + GPG signatures and Authenticode-signed Windows files; see [SECURITY.md](SECURITY.md).
+
+## Transparency
+The Windows app is never hidden: it always shows its window, and closing the window quits it completely. It has an activity and security log (also `/log` in the terminal). See SECURITY.md.

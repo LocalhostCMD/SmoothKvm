@@ -28,6 +28,11 @@ Import-Certificate -FilePath SmoothKvm-code-signing.cer -CertStoreLocation Cert:
 ```
 Only do this after verifying the thumbprint above through a channel you trust.
 
+## Transparency
+- On Windows the app is never hidden: starting it always opens its window, and closing the window (or choosing Quit in the tray) stops everything - it releases held keys, closes every connection and listener, and exits. "Open when I sign in" opens the window too.
+- No telemetry, no accounts, no auto-update, no internet connections of its own. It only connects to the addresses you add, and listens only when you turn on "Let paired computers control this PC".
+- The app shows an activity and security log (also `/log` in the terminal, saved to `events.log` in the settings folder). Pairing, new devices, sessions, emergency stops, removed devices, and refused or failed connection attempts are recorded; failed attempts are marked as security alerts and counted on the tray icon.
+
 ## What protects what
 - Transport: Noise_XX_25519_ChaChaPoly_BLAKE2s; pairing: Noise_XXpsk3 with a single-use 8-digit PIN that is burned after
   any attempt. Receivers accept only paired keys, clamp every received number, and release held keys if the controller

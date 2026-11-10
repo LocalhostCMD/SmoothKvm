@@ -4,7 +4,7 @@
 //! and sent to that receiver. The local cursor is parked at the screen centre and movement
 //! is measured as the offset from that point. Hook callbacks use `try_lock` so they can
 //! never deadlock or stall input; they only touch memory and channels.
-use crate::{fx_win, inject_win};
+use crate::{fx_win, inject_win, shared};
 use kvm_protocol::{Config, Edge, InputEvent, Message, MouseButton};
 use std::collections::HashMap;
 use std::io;
@@ -120,6 +120,7 @@ fn screen_state(cfg: Config) -> State {
 /// Emergency stop: back to this PC, tell every screen to release held inputs, release ours,
 /// and stop switching until resumed.
 fn do_emergency(st: &mut State) {
+    shared::warn("EMERGENCY STOP: screen switching paused, all keys and buttons released");
     if st.active.is_some() {
         leave_remote(st);
     }
@@ -155,6 +156,7 @@ impl Controller {
         if let Ok(mut g) = STATE.lock() {
             if let Some(st) = g.as_mut() {
                 st.paused = false;
+                shared::info("Resumed after emergency stop");
             }
         }
     }
@@ -219,6 +221,9 @@ fn game_blocks(st: &mut State) -> bool {
         }
     }
     let v = game_active_now();
+    if v != st.guard_cache.1 {
+        shared::info(if v { "Game mode: a full-screen app is running, screen switching is blocked" } else { "Game mode: full-screen app closed, switching works again" });
+    }
     st.guard_cache = (Some(Instant::now()), v);
     v
 }
