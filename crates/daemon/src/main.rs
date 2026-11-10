@@ -38,6 +38,8 @@ mod capture_win;
 #[cfg(windows)]
 mod daemon;
 #[cfg(windows)]
+mod dpapi;
+#[cfg(windows)]
 mod fx_win;
 #[cfg(windows)]
 mod gui;

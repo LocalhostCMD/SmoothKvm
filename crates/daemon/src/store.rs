@@ -65,14 +65,40 @@ impl Identity {
         if let Ok(text) = fs::read_to_string(&path) {
             let mut lines = text.lines();
             if let (Some(a), Some(b)) = (lines.next(), lines.next()) {
-                if let (Some(private), Some(public)) = (from_hex(a), from_hex(b)) {
-                    return Ok(Self { private, public });
+                if let Some(blob_hex) = a.strip_prefix("dpapi:") {
+                    // Windows: the private key is encrypted for this Windows account.
+                    #[cfg(windows)]
+                    if let (Some(blob), Some(public)) = (from_hex(blob_hex), from_hex(b)) {
+                        return match crate::dpapi::unprotect(&blob) {
+                            Ok(private) => Ok(Self { private, public }),
+                            // Never quietly invent a new identity: that would orphan every pairing.
+                            Err(_) => Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "identity.key cannot be decrypted (it belongs to another Windows account or computer)",
+                            )),
+                        };
+                    }
+                    let _ = blob_hex;
+                } else if let (Some(private), Some(public)) = (from_hex(a), from_hex(b)) {
+                    // Older plaintext key: use it, and upgrade the file in place (encrypts it on Windows).
+                    let me = Self { private, public };
+                    me.save(&path)?;
+                    return Ok(me);
                 }
             }
         }
         let (private, public) = generate_keypair()?;
-        write_private(&path, &format!("{}\n{}\n", to_hex(&private), to_hex(&public)))?;
-        Ok(Self { private, public })
+        let me = Self { private, public };
+        me.save(&path)?;
+        Ok(me)
+    }
+
+    fn save(&self, path: &PathBuf) -> io::Result<()> {
+        #[cfg(windows)]
+        let first = format!("dpapi:{}", to_hex(&crate::dpapi::protect(&self.private)?));
+        #[cfg(not(windows))]
+        let first = to_hex(&self.private);
+        write_private(path, &format!("{first}\n{}\n", to_hex(&self.public)))
     }
 }
 

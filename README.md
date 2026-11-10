@@ -40,3 +40,6 @@ The PIN is mixed into the key exchange, works for one attempt only, and any wron
 ## Build
 `cargo build --release`. Windows installer: `packaging/windows/SmoothKvm.iss` (Inno Setup 6). Ubuntu package:
 `packaging/linux/build-deb.sh` (or `wsl-build.sh` from Windows).
+
+## Verifying downloads
+Releases include `SHA256SUMS` + GPG signatures and Authenticode-signed Windows files; see [SECURITY.md](SECURITY.md).

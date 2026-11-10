@@ -75,6 +75,20 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+/// Decode a message from the network. postcard is a maintained, compact format whose decoder checks every length
+/// against the bytes actually present, so a forged length field ("this string is 2^60 bytes") fails immediately
+/// instead of trying to allocate. Input is also capped at one frame.
+pub fn decode_message(body: &[u8]) -> io::Result<Message> {
+    if body.len() > MAX_PLAINTEXT {
+        return Err(err("message too large"));
+    }
+    postcard::from_bytes(body).map_err(err)
+}
+
+pub fn encode_message(msg: &Message) -> io::Result<Vec<u8>> {
+    postcard::to_stdvec(msg).map_err(err)
+}
+
 fn write_frame(s: &mut TcpStream, data: &[u8]) -> io::Result<()> {
     if data.len() > u16::MAX as usize {
         return Err(err("frame too large"));
@@ -191,13 +205,13 @@ impl SecureConn {
     }
 
     pub fn send(&mut self, msg: &Message) -> io::Result<()> {
-        let body = bincode::serialize(msg).map_err(err)?;
+        let body = encode_message(msg)?;
         self.send_raw(&body)
     }
 
     pub fn recv(&mut self) -> io::Result<Message> {
         let body = self.recv_raw()?;
-        bincode::deserialize(&body).map_err(err)
+        decode_message(&body)
     }
 
     pub fn set_timeouts(&self, read: Option<Duration>, write: Option<Duration>) -> io::Result<()> {
@@ -359,6 +373,56 @@ mod tests {
         raw.stream.write_all(&[0, 20]).unwrap();
         raw.stream.write_all(&[7u8; 20]).unwrap();
         assert!(t.join().unwrap(), "forged frame was accepted");
+    }
+
+    #[test]
+    fn decoder_matches_the_encoder() {
+        let m = Message::Input(InputEvent::MouseMoveRel { dx: -7, dy: 9 });
+        let bytes = encode_message(&m).unwrap();
+        assert!(matches!(decode_message(&bytes).unwrap(), Message::Input(InputEvent::MouseMoveRel { dx: -7, dy: 9 })));
+    }
+
+    #[test]
+    fn garbage_never_panics_the_decoder() {
+        let mut x: u64 = 0x1234_5678_9abc_def0;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for _ in 0..300_000 {
+            let len = (next() % 80) as usize;
+            let buf: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+            let _ = decode_message(&buf);
+        }
+        // every single-byte corruption of a valid message
+        let good = encode_message(&Message::Hello { name: "pc".into(), width: 1, height: 2, version: 1 }).unwrap();
+        for i in 0..good.len() {
+            for b in 0..=255u8 {
+                let mut m = good.clone();
+                m[i] = b;
+                let _ = decode_message(&m);
+            }
+        }
+    }
+
+    #[test]
+    fn forged_giant_length_is_refused_without_allocating() {
+        // variant 4 = Clipboard(String), then a varint length claiming ~2^60 bytes, followed by 4 real bytes
+        let mut evil = vec![4u8];
+        let mut n = 1u64 << 60;
+        loop {
+            let b = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                evil.push(b);
+                break;
+            }
+            evil.push(b | 0x80);
+        }
+        evil.extend_from_slice(b"tiny");
+        assert!(decode_message(&evil).is_err());
     }
 
     #[test]
