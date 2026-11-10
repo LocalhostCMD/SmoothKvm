@@ -11,12 +11,13 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 fn http(method: &str, path: &str, token: Option<&str>, body: &str) -> io::Result<String> {
-    let mut s = TcpStream::connect_timeout(&"127.0.0.1:24801".parse().unwrap(), Duration::from_millis(600))?;
+    let mut s = TcpStream::connect_timeout(&([127, 0, 0, 1], crate::httpd::port()).into(), Duration::from_millis(600))?;
     s.set_read_timeout(Some(Duration::from_secs(3)))?;
     let tok = token.map(|t| format!("X-Token: {t}\r\n")).unwrap_or_default();
     write!(
         s,
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:24801\r\n{tok}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{tok}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        crate::httpd::port(),
         body.len()
     )?;
     let mut out = String::new();
@@ -29,7 +30,7 @@ pub fn running() -> bool {
 }
 
 pub fn panel_url() -> io::Result<String> {
-    Ok(format!("http://127.0.0.1:24801/#{}", store::panel_token()?))
+    Ok(format!("http://127.0.0.1:{}/#{}", crate::httpd::port(), store::panel_token()?))
 }
 
 /// Start the background app (no console window) if it isn't already running.

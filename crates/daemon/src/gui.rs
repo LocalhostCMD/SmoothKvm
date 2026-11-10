@@ -77,7 +77,7 @@ fn open_window(target: &tao::event_loop::EventLoopWindowTarget<UserEvent>, ctx: 
     let webview = WebViewBuilder::new_with_web_context(ctx)
         .with_url(&url)
         // The window only ever shows the local panel.
-        .with_navigation_handler(|u| u.starts_with("http://127.0.0.1:24801"))
+        .with_navigation_handler(|u| u.starts_with(&format!("http://127.0.0.1:{}", crate::httpd::port())))
         .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
         .build(&window)
         .map_err(|e| err(e.to_string()))?;

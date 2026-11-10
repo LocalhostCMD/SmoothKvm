@@ -55,6 +55,8 @@ fn apply(cfg: &Config, ctl: &capture_win::Controller, ident: &Arc<Identity>) {
         }
     }
     ctl.set_remotes(generation, cfg.clone(), senders);
+    // "Let other computers control this PC" (off by default).
+    crate::sync_receiver(cfg.receive, cfg.port);
 }
 
 fn sleep_until_event(generation: u64, name: &str, total: Duration) {

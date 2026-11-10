@@ -1,5 +1,5 @@
 //! Client for the local control API (Windows panel server / Linux receiver service).
-use crate::httpd::PORT;
+use crate::httpd::port;
 use crate::store;
 use serde_json::Value;
 use std::io::{self, Read, Write};
@@ -12,12 +12,13 @@ pub struct Client {
 }
 
 fn request(method: &str, path: &str, token: Option<&str>, body: &str, timeout: Duration) -> io::Result<(u16, String)> {
-    let mut s = TcpStream::connect_timeout(&([127, 0, 0, 1], PORT).into(), Duration::from_millis(800))?;
+    let mut s = TcpStream::connect_timeout(&([127, 0, 0, 1], port()).into(), Duration::from_millis(800))?;
     s.set_read_timeout(Some(timeout))?;
     let tok = token.map(|t| format!("X-Token: {t}\r\n")).unwrap_or_default();
     write!(
         s,
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\n{tok}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{tok}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        port(),
         body.len()
     )?;
     let mut out = String::new();

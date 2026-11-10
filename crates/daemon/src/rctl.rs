@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tiny_http::{Method, Request, Server};
 
 pub fn bind() -> io::Result<Server> {
-    Server::http(("127.0.0.1", PORT)).map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, e.to_string()))
+    Server::http(("127.0.0.1", port())).map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, e.to_string()))
 }
 
 pub fn serve(server: Server, token: String, ident: Arc<Identity>) {

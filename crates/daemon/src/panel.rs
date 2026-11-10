@@ -13,7 +13,7 @@ use std::io::{self, Read};
 use std::sync::Arc;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-pub const PORT: u16 = 24801;
+
 const HTML: &str = include_str!("panel.html");
 
 fn header(name: &str, value: &str) -> Header {
@@ -40,7 +40,7 @@ fn json_reply(req: Request, code: u16, v: Value) {
 }
 
 pub fn bind() -> io::Result<Server> {
-    Server::http(("127.0.0.1", PORT)).map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, e.to_string()))
+    Server::http(("127.0.0.1", crate::httpd::port())).map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, e.to_string()))
 }
 
 pub fn serve(server: Server, token: String, ident: Arc<store::Identity>) {
@@ -57,13 +57,7 @@ fn str_field(v: &Value, k: &str) -> String {
 }
 
 fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
-    let host_ok = req.headers().iter().any(|h| {
-        h.field.equiv("Host") && {
-            let v = h.value.as_str();
-            v == format!("127.0.0.1:{PORT}") || v == format!("localhost:{PORT}")
-        }
-    });
-    if !host_ok {
+    if !crate::httpd::host_ok(&req) {
         return json_reply(req, 403, json!({"error": "forbidden"}));
     }
     let path = req.url().split('?').next().unwrap_or("").to_string();
@@ -102,6 +96,8 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                     "pairing": shared::pending_pair(),
                     "game_active": capture_win::game_active_now(),
                     "paused": capture_win::is_paused(),
+                    "sessions": shared::sessions(),
+                    "pairing_open_secs": shared::pairing_remaining(),
                     "peers": peers,
                     "me": me,
                 }),
@@ -129,6 +125,12 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
         ("/api/pair", Method::Post) => {
             shared::request_pair(&str_field(&data, "name"));
             json_reply(req, 200, json!({"ok": true}));
+        }
+        // Let a new computer pair with THIS one (so it can control this PC) for a short while.
+        ("/api/pair/open", Method::Post) => {
+            let secs = data.get("secs").and_then(|v| v.as_u64()).unwrap_or(120).clamp(10, 600);
+            shared::open_pairing(secs);
+            json_reply(req, 200, json!({"secs": secs}));
         }
         ("/api/pair/answer", Method::Post) => {
             shared::answer_pair(data.get("accept").and_then(|v| v.as_bool()).unwrap_or(false));

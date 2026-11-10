@@ -5,7 +5,11 @@ use serde_json::Value;
 use std::io::Read;
 use tiny_http::{Header, Request, Response};
 
-pub const PORT: u16 = 24801;
+/// Control/panel port on 127.0.0.1 (override with SMOOTHKVM_PORT to run a second instance, e.g. for tests).
+pub fn port() -> u16 {
+    static P: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("SMOOTHKVM_PORT").ok().and_then(|v| v.parse().ok()).filter(|p| *p >= 1024).unwrap_or(24801))
+}
 
 pub fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
@@ -34,7 +38,8 @@ pub fn host_ok(req: &Request) -> bool {
     req.headers().iter().any(|h| {
         h.field.equiv("Host") && {
             let v = h.value.as_str();
-            v == format!("127.0.0.1:{PORT}") || v == format!("localhost:{PORT}")
+            let p = port();
+            v == format!("127.0.0.1:{p}") || v == format!("localhost:{p}")
         }
     })
 }

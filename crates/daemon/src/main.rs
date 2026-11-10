@@ -14,7 +14,7 @@ use kvm_protocol::{DisplayAction, InputEvent, Message, MouseButton};
 use std::collections::HashSet;
 use std::io;
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -170,11 +170,17 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, newly_paired: bool) ->
 
 const MAX_SESSIONS: usize = 16;
 
-fn serve(addr: &str, pair: bool, service: bool) -> io::Result<()> {
+/// Whether this machine currently accepts incoming control (always on for the Linux service;
+/// on Windows it follows the "let other computers control this PC" setting).
+pub static RECEIVE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// `ctl_server`: also run the receiver control API (Linux service). `ui_confirm`: pairing codes are
+/// confirmed in the app/terminal UI instead of on stdin.
+fn serve(addr: &str, pair: bool, ctl_server: bool, ui_confirm: bool) -> io::Result<()> {
     let ident = Arc::new(Identity::load_or_create()?);
     let listener = TcpListener::bind(addr)?;
     println!("SmoothKvm receiver {VERSION} listening on {addr} (device id {})", store::short(&secure::to_hex(&ident.public)));
-    if service {
+    if ctl_server {
         let token = store::panel_token()?;
         let server = rctl::bind()?;
         let id = ident.clone();
@@ -187,6 +193,9 @@ fn serve(addr: &str, pair: bool, service: bool) -> io::Result<()> {
     let active = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
+        if !RECEIVE_ENABLED.load(Ordering::SeqCst) {
+            continue; // switched off in the settings: drop the connection before any handshake
+        }
         // Input, control and display sessions run side by side; cap them so strangers can't flood us.
         if active.fetch_add(1, Ordering::SeqCst) >= MAX_SESSIONS {
             active.fetch_sub(1, Ordering::SeqCst);
@@ -194,7 +203,7 @@ fn serve(addr: &str, pair: bool, service: bool) -> io::Result<()> {
         }
         let (ident, active) = (ident.clone(), active.clone());
         std::thread::spawn(move || {
-            match handle_session(stream, &ident, service) {
+            match handle_session(stream, &ident, ui_confirm) {
                 Ok(true) => shared::close_pairing(),
                 Ok(false) => {}
                 Err(e) => println!("rejected/ended: {e}"),
@@ -203,6 +212,22 @@ fn serve(addr: &str, pair: bool, service: bool) -> io::Result<()> {
         });
     }
     Ok(())
+}
+
+/// Make this machine controllable (used by the Windows app when "let other computers control this PC"
+/// is on): start the receiver once, then just flip RECEIVE_ENABLED as the setting changes.
+#[cfg(windows)]
+pub fn sync_receiver(enabled: bool, port: u16) {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    RECEIVE_ENABLED.store(enabled, Ordering::SeqCst);
+    if enabled && !STARTED.swap(true, Ordering::SeqCst) {
+        std::thread::spawn(move || {
+            if let Err(e) = serve(&format!("0.0.0.0:{port}"), false, false, true) {
+                eprintln!("cannot start the receiver on port {port}: {e}");
+                STARTED.store(false, Ordering::SeqCst);
+            }
+        });
+    }
 }
 
 fn test(addr: &str, pairing: bool) -> io::Result<()> {
@@ -278,10 +303,10 @@ fn main() -> io::Result<()> {
         Some("install") => app::install(flag("--autostart")),
         #[cfg(windows)]
         Some("uninstall") => app::uninstall(),
-        Some("service") => serve(&format!("0.0.0.0:{}", cfg.port), false, true),
+        Some("service") => serve(&format!("0.0.0.0:{}", cfg.port), false, true, true),
         Some("listen") => {
             let addr = pos.first().map(|s| s.to_string()).unwrap_or_else(|| format!("0.0.0.0:{}", cfg.port));
-            serve(&addr, flag("--pair"), false)
+            serve(&addr, flag("--pair"), false, false)
         }
         Some("display") => {
             #[cfg(unix)]

@@ -219,12 +219,14 @@ pub struct Config {
     pub escape_hid: u16,
     /// Never switch screens while a full-screen app or game is running.
     pub game_guard: bool,
+    /// Let paired computers control THIS machine too (it listens on `port`). Off by default.
+    pub receive: bool,
     pub animation: Animation,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { port: 24800, remotes: vec![], escape_hid: 0x47, game_guard: true, animation: Animation::default() }
+        Self { port: 24800, remotes: vec![], escape_hid: 0x47, game_guard: true, receive: false, animation: Animation::default() }
     }
 }
 

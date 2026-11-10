@@ -46,6 +46,8 @@ const SENDER_CMDS: &[(&str, &str)] = &[
     ("/effect", "/effect <bounce|elastic|slide|overshoot|spring|none> [ms] [px]"),
     ("/curve", "/curve <x1> <y1> <x2> <y2>   your own cubic-bezier effect"),
     ("/game", "/game on|off   never switch screens while gaming"),
+    ("/receive", "/receive on|off   let paired computers control THIS PC too"),
+    ("/allow", "/allow [seconds]   let a new device pair with this PC (default 120)"),
     ("/stop", "EMERGENCY STOP: release every key/button and pause switching"),
     ("/resume", "resume screen switching"),
     ("/devices", "list paired devices"),
@@ -294,6 +296,25 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             cfg["game_guard"] = json!(on);
             set_config(c, &cfg)?;
             Ok(vec![(Kind::Good, format!("Game mode {}.", if on { "on - no screen switching during full-screen apps" } else { "off" }))])
+        }
+        ("/receive", true) => {
+            let on = match a.first().map(|s| s.to_lowercase()).as_deref() {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err("usage: /receive on|off".into()),
+            };
+            let mut cfg = state_of(c)?["config"].clone();
+            cfg["receive"] = json!(on);
+            set_config(c, &cfg)?;
+            Ok(vec![
+                (Kind::Good, format!("This PC {} be controlled by paired computers.", if on { "can now" } else { "can no longer" })),
+                (Kind::Dim, if on { "Next: /allow, then pair from the other computer.".into() } else { "Nothing is listening for control any more.".into() }),
+            ])
+        }
+        ("/allow", true) => {
+            let secs = a.first().and_then(|s| s.parse::<u64>().ok()).unwrap_or(120);
+            let r = c.post("/api/pair/open", &json!({"secs": secs}))?;
+            Ok(vec![(Kind::Info, format!("Pairing open for {}s. Start pairing from the other computer now (needs /receive on).", r["secs"]))])
         }
         ("/stop", true) => {
             c.post("/api/emergency", &json!({"on": true}))?;
