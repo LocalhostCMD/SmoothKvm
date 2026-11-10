@@ -73,27 +73,56 @@ pub enum AnimationStyle {
     Custom,
 }
 
+/// What is drawn on screen when you move to another screen. Purely visual: it never touches the mouse.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Visual {
+    None,
+    /// Colourful rings spreading out from where you crossed.
+    Ripple,
+    /// A glowing wave along the screen edge.
+    Glow,
+    /// A burst of confetti-like sparks.
+    Sparks,
+    /// A streaking comet with a rainbow tail along the edge.
+    Comet,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Palette {
+    Rainbow,
+    Ocean,
+    Sunset,
+    Neon,
+    Mono,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Animation {
+    /// The on-screen effect.
+    pub visual: Visual,
+    pub palette: Palette,
+    /// Motion (easing) of the effect: how it speeds up, bounces or springs.
     pub style: AnimationStyle,
     pub duration_ms: u32,
-    /// How far the cursor travels in the animation, in pixels.
-    pub distance_px: u32,
-    /// Animate when the cursor arrives on the remote screen.
+    /// Size of the effect on screen, in pixels.
+    pub size_px: u32,
+    /// Play when you move onto another screen.
     pub on_enter: bool,
-    /// Animate when the cursor comes back to this PC.
+    /// Play when you come back to this PC.
     pub on_leave: bool,
-    /// Control points `[x1, y1, x2, y2]` of the custom curve (same meaning as CSS cubic-bezier).
+    /// Control points `[x1, y1, x2, y2]` of the custom motion curve (same meaning as CSS cubic-bezier).
     pub curve: [f32; 4],
 }
 
 impl Default for Animation {
     fn default() -> Self {
         Self {
-            style: AnimationStyle::Bounce,
-            duration_ms: 300,
-            distance_px: 48,
+            visual: Visual::Ripple,
+            palette: Palette::Rainbow,
+            style: AnimationStyle::Overshoot,
+            duration_ms: 700,
+            size_px: 220,
             on_enter: true,
             on_leave: true,
             curve: [0.34, 1.56, 0.64, 1.0],
@@ -266,8 +295,8 @@ impl Config {
         if a.duration_ms > 2000 {
             return Err("animation duration must be 0-2000 ms".into());
         }
-        if !(8..=300).contains(&a.distance_px) {
-            return Err("animation distance must be 8-300 px".into());
+        if !(40..=600).contains(&a.size_px) {
+            return Err("effect size must be 40-600 px".into());
         }
         let [x1, y1, x2, y2] = a.curve;
         if !(0.0..=1.0).contains(&x1) || !(0.0..=1.0).contains(&x2) || !(-2.0..=3.0).contains(&y1) || !(-2.0..=3.0).contains(&y2) {

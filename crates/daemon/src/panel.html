@@ -69,22 +69,26 @@ button.stop{background:var(--bad);font-weight:600}
 </div>
 
 <div class="card">
-  <h2>Animation</h2>
+  <h2>Screen-change effect</h2>
+  <div class="hint" style="margin:-4px 0 6px">A colourful effect drawn on your screen when you cross to another screen. It never moves your mouse.</div>
   <div class="row3">
-    <div><label>Effect</label><select id="astyle"><option>None</option><option>Bounce</option><option>Elastic</option><option>Slide</option><option>Overshoot</option><option>Spring</option><option>Custom</option></select></div>
-    <div><label>Duration (ms)</label><input id="adur" type="number" min="0" max="2000" step="50"></div>
-    <div><label>Distance (px)</label><input id="adist" type="number" min="8" max="300" step="4"></div>
+    <div><label>Effect</label><select id="avisual"><option>None</option><option>Ripple</option><option>Glow</option><option>Sparks</option><option>Comet</option></select></div>
+    <div><label>Colours</label><select id="apal"><option>Rainbow</option><option>Ocean</option><option>Sunset</option><option>Neon</option><option>Mono</option></select></div>
+    <div><label>Motion</label><select id="astyle"><option>Bounce</option><option>Elastic</option><option>Slide</option><option>Overshoot</option><option>Spring</option><option>Custom</option></select></div>
+  </div>
+  <div class="row">
+    <div><label>Duration (ms)</label><input id="adur" type="number" min="100" max="2000" step="50"></div>
+    <div><label>Size (px)</label><input id="asize" type="number" min="40" max="600" step="10"></div>
   </div>
   <div id="customrow" style="display:none">
-    <label>Your own curve: cubic-bezier x1, y1, x2, y2 (x between 0 and 1; y can go below 0 or above 1 to overshoot)</label>
+    <label>Your own motion curve: cubic-bezier x1, y1, x2, y2 (x between 0 and 1; y can go below 0 or above 1 to overshoot)</label>
     <div class="row4"><input id="c0" type="number" step="0.01" min="0" max="1"><input id="c1" type="number" step="0.01" min="-2" max="3"><input id="c2" type="number" step="0.01" min="0" max="1"><input id="c3" type="number" step="0.01" min="-2" max="3"></div>
     <div class="chips"><span class="pill">Start from:</span><button class="ghost" data-c="0.2,0.9,0.2,1">Snappy</button><button class="ghost" data-c="0.25,0.1,0.25,1">Gentle</button><button class="ghost" data-c="0.34,1.56,0.64,1">Punchy</button><button class="ghost" data-c="0.68,-0.6,0.32,1.6">Whip</button></div>
   </div>
   <svg id="curve" viewBox="0 0 120 80"></svg>
-  <label class="check"><input id="aenter" type="checkbox"> Animate when the cursor arrives on another screen</label>
-  <label class="check"><input id="aleave" type="checkbox"> Animate when the cursor comes back to this PC</label>
-  <div id="track"><div id="ball"></div></div>
-  <div class="btns"><button class="ghost" id="preview">Preview</button></div>
+  <label class="check"><input id="aenter" type="checkbox"> Play when I move onto another screen</label>
+  <label class="check"><input id="aleave" type="checkbox"> Play when I come back to this PC</label>
+  <div class="btns"><button id="preview">Preview on screen</button></div>
 </div>
 
 <div class="card">
@@ -112,12 +116,10 @@ button.stop{background:var(--bad);font-weight:600}
 </main>
 
 <div id="modal"><div class="box">
-  <h2 id="mtitle">Pairing</h2>
-  <div>Your other computer must show exactly this code:</div>
-  <div id="code"></div>
-  <div class="btns" style="justify-content:center">
-    <button id="myes">Yes, they match</button><button class="ghost" id="mno">No / cancel</button>
-  </div>
+  <h2 id="mtitle">Pair</h2>
+  <div>Enter the 8-digit PIN shown on the other device:</div>
+  <input id="pinbox" maxlength="8" inputmode="numeric" autocomplete="off" style="font:600 28px ui-monospace,Consolas,monospace;letter-spacing:5px;text-align:center;margin:14px 0">
+  <div class="btns" style="justify-content:center"><button id="myes">Pair</button><button class="ghost" id="mno">Cancel</button></div>
 </div></div>
 
 <script>
@@ -195,7 +197,7 @@ function renderDetail(){
   const st=document.createElement('div'); st.className='pill'; st.id='stline';
   const btns=document.createElement('div'); btns.className='btns';
   const mk=(t,cls,fn)=>{ const b=document.createElement('button'); b.textContent=t; if(cls) b.className=cls; b.onclick=()=>fn(b); btns.appendChild(b); return b; };
-  mk('Pair this device','ghost',async b=>{ try{ await api('/api/pair',{name:r.name}); say('Pairing… start the other side with --pair',true); }catch(e){ say(e.message,false); } });
+  mk('Pair this device','ghost',()=>askPin(r.name));
   mk('Start display','ghost',b=>display(r,'start',b));
   mk('Stop display','ghost',b=>display(r,'stop',b));
   mk('Open display','',async b=>{ try{ const j=await api('/api/viewer',{name:r.name}); $('dline').textContent = j.launched ? 'Viewer opened.' : 'Connect a VNC viewer to localhost:'+j.port; }catch(e){ $('dline').textContent=e.message; } });
@@ -242,31 +244,29 @@ function drawCurve(){
   for(let i=0;i<=60;i++){ const t=i/60, v=a.style==='None'?t:ease(a,t); d+=(i?'L':'M')+(10+t*100).toFixed(1)+' '+(65-v*45).toFixed(1)+' '; }
   $('curve').innerHTML='<line x1="10" y1="65" x2="110" y2="65" stroke="currentColor" opacity=".25"/><line x1="10" y1="20" x2="110" y2="20" stroke="currentColor" opacity=".25" stroke-dasharray="3 3"/><path d="'+d+'" fill="none" stroke="var(--acc)" stroke-width="2"/>';
 }
-function preview(){
-  const ball=$('ball'), a=cfg.animation, max=Math.min($('track').clientWidth-24, a.distance_px*2.2), t0=performance.now();
-  (function f(now){ const t=Math.min((now-t0)/Math.max(a.duration_ms,1),1); ball.style.left=(4+max*ease(a,t))+'px'; if(t<1) requestAnimationFrame(f); })(t0);
-}
 function bindSimple(){
   const A=()=>cfg.animation;
   const upd=()=>{ $('customrow').style.display = A().style==='Custom' ? 'block' : 'none'; drawCurve(); };
-  $('astyle').onchange=e=>{ A().style=e.target.value; upd(); touch(); preview(); };
+  $('astyle').onchange=e=>{ A().style=e.target.value; upd(); touch(); };
   $('adur').oninput=e=>{ A().duration_ms=+e.target.value; touch(); };
-  $('adist').oninput=e=>{ A().distance_px=+e.target.value; touch(); };
+  $('asize').oninput=e=>{ A().size_px=+e.target.value; touch(); };
+  $('avisual').onchange=e=>{ A().visual=e.target.value; touch(); };
+  $('apal').onchange=e=>{ A().palette=e.target.value; touch(); };
   [0,1,2,3].forEach(i=>{ $('c'+i).oninput=e=>{ A().curve[i]=+e.target.value; drawCurve(); touch(); }; });
-  document.querySelectorAll('.chips button').forEach(b=>b.onclick=()=>{ A().style='Custom'; A().curve=b.dataset.c.split(',').map(Number); fillSimple(); touch(); preview(); });
+  document.querySelectorAll('.chips button').forEach(b=>b.onclick=()=>{ A().style='Custom'; A().curve=b.dataset.c.split(',').map(Number); fillSimple(); touch(); });
   $('estop').onclick=()=>api('/api/emergency',{on:true}).then(poll);
   $('resume').onclick=()=>api('/api/emergency',{on:false}).then(poll);
   $('aenter').onchange=e=>{ A().on_enter=e.target.checked; touch(); };
   $('aleave').onchange=e=>{ A().on_leave=e.target.checked; touch(); };
   $('guard').onchange=e=>{ cfg.game_guard=e.target.checked; touch(); };
   $('recv').onchange=e=>{ cfg.receive=e.target.checked; touch(); };
-  $('allow').onclick=async()=>{ try{ const r=await api('/api/pair/open',{secs:120}); say('Pairing open for '+r.secs+'s: start pairing from the other computer', true); }catch(e){ say(e.message,false); } };
+  $('allow').onclick=async()=>{ try{ const r=await api('/api/pair/open',{secs:120}); say('Pairing open: type PIN '+r.pin+' on the other computer (valid '+r.secs+'s, one attempt)', true); }catch(e){ say(e.message,false); } };
   $('esc').onchange=e=>{ cfg.escape_hid=+e.target.value; touch(); };
-  $('preview').onclick=preview;
+  $('preview').onclick=async()=>{ try{ await api('/api/effect/test',{animation:cfg.animation}); }catch(e){ say(e.message,false); } };
 }
 function fillSimple(){
   const a=cfg.animation;
-  $('astyle').value=a.style; $('adur').value=a.duration_ms; $('adist').value=a.distance_px;
+  $('astyle').value=a.style; $('adur').value=a.duration_ms; $('asize').value=a.size_px; $('avisual').value=a.visual; $('apal').value=a.palette;
   $('aenter').checked=a.on_enter; $('aleave').checked=a.on_leave; $('guard').checked=cfg.game_guard; $('esc').value=String(cfg.escape_hid);
   $('recv').checked=!!cfg.receive;
   if(!a.curve) a.curve=[0.34,1.56,0.64,1];
@@ -287,24 +287,16 @@ function renderPeers(list){
     row.append(l,b); box.appendChild(row);
   });
 }
-let lastPair=null;
-function showPairing(p){
-  $('modal').style.display = p ? 'flex' : 'none';
-  if(p && JSON.stringify(p)!==lastPair){ $('mtitle').textContent='Pair with '+p.name; $('code').textContent=p.sas; }
-  lastPair = p ? JSON.stringify(p) : null;
-}
-$('myes').onclick=()=>api('/api/pair/answer',{accept:true}).then(poll);
-$('mno').onclick=()=>api('/api/pair/answer',{accept:false}).then(poll);
-
+let pairTarget=null;function askPin(name){ pairTarget=name; $('mtitle').textContent='Pair with '+name; $('pinbox').value=''; $('modal').style.display='flex'; $('pinbox').focus(); }$('mno').onclick=()=>{ $('modal').style.display='none'; };$('myes').onclick=async()=>{ const pin=$('pinbox').value.trim(); try{ await api('/api/pair',{name:pairTarget,pin}); $('modal').style.display='none'; say('Pairing with '+pairTarget+'...',true); }catch(e){ say(e.message,false); } };
 function render(){ renderMap(); renderDetail(); }
 async function poll(){
   try{
     const s=await api('/api/state');
-    status=s.status||{}; $('me').textContent=s.me; renderPeers(s.peers); showPairing(s.pairing);
+    status=s.status||{}; $('me').textContent=s.me; renderPeers(s.peers);
     const g=$('game'); g.textContent='Game mode: '+(s.game_active ? 'ACTIVE (screen switching paused)' : 'off'); g.className='badge'+(s.game_active?' on':'');
     { const n=(s.sessions||[]).length, o=s.pairing_open_secs||0;
       $('recvinfo').textContent = !(cfg&&cfg.receive) ? 'Off. Nothing is listening.' :
-        'On. ' + (n ? n+' computer(s) controlling this PC right now. ' : 'No one is connected. ') + (o ? 'Pairing is open for '+o+'s.' : 'Pairing is closed.'); }
+        'On. ' + (n ? n+' computer(s) controlling this PC right now. ' : 'No one is connected. ') + (o ? 'Pairing is OPEN for '+o+'s. PIN to type on the other computer: '+(s.pairing_pin||'?') : 'Pairing is closed.'); }
     $('pausedbar').style.display = s.paused ? 'block' : 'none';
     $('estop').style.display = s.paused ? 'none' : '';
     if(cfg){ renderMap(); renderStatusLine(); }

@@ -5,39 +5,17 @@
 //! custom headers cross-origin without a preflight, which we never approve), strict
 //! CSP, no CORS headers, request bodies capped at 64 KiB.
 use crate::store::{self, Peers};
+use crate::httpd::{json_reply, reply};
 use crate::{capture_win, daemon, gui, shared};
 use kvm_protocol::secure::to_hex;
 use kvm_protocol::{Config, DisplayAction};
 use serde_json::{json, Value};
 use std::io::{self, Read};
 use std::sync::Arc;
-use tiny_http::{Header, Method, Request, Response, Server};
+use tiny_http::{Method, Request, Server};
 
 
 const HTML: &str = include_str!("panel.html");
-
-fn header(name: &str, value: &str) -> Header {
-    Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
-}
-
-fn reply(req: Request, code: u16, ctype: &str, body: String) {
-    let resp = Response::from_string(body)
-        .with_status_code(code)
-        .with_header(header("Content-Type", ctype))
-        .with_header(header("Cache-Control", "no-store"))
-        .with_header(header("X-Frame-Options", "DENY"))
-        .with_header(header("X-Content-Type-Options", "nosniff"))
-        .with_header(header("Referrer-Policy", "no-referrer"))
-        .with_header(header(
-            "Content-Security-Policy",
-            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
-        ));
-    let _ = req.respond(resp);
-}
-
-fn json_reply(req: Request, code: u16, v: Value) {
-    reply(req, code, "application/json", v.to_string());
-}
 
 pub fn bind() -> io::Result<Server> {
     Server::http(("127.0.0.1", crate::httpd::port())).map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, e.to_string()))
@@ -68,8 +46,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
     if path == "/ping" {
         return json_reply(req, 200, json!({"ok": true}));
     }
-    let authed = req.headers().iter().any(|h| h.field.equiv("X-Token") && h.value.as_str() == token);
-    if !authed {
+    if !crate::httpd::authed(&req, token) {
         return json_reply(req, 401, json!({"error": "unauthorized"}));
     }
     let mut body = String::new();
@@ -93,7 +70,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                     "version": crate::VERSION,
                     "config": store::load_config(),
                     "status": shared::statuses(),
-                    "pairing": shared::pending_pair(),
+                    "pairing_pin": shared::pairing_pin(),
                     "game_active": capture_win::game_active_now(),
                     "paused": capture_win::is_paused(),
                     "sessions": shared::sessions(),
@@ -122,19 +99,20 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                 Err(e) => json_reply(req, 500, json!({"error": e.to_string()})),
             }
         }
+        // Pair with screen `name` using the PIN shown on that device.
         ("/api/pair", Method::Post) => {
-            shared::request_pair(&str_field(&data, "name"));
+            let pin = str_field(&data, "pin");
+            if pin.len() != 8 || !pin.chars().all(|c| c.is_ascii_digit()) {
+                return json_reply(req, 400, json!({"error": "the PIN is 8 digits"}));
+            }
+            shared::request_pair(&str_field(&data, "name"), &pin);
             json_reply(req, 200, json!({"ok": true}));
         }
-        // Let a new computer pair with THIS one (so it can control this PC) for a short while.
+        // Let a new computer pair with THIS one (so it can control this PC): returns the PIN to type there.
         ("/api/pair/open", Method::Post) => {
             let secs = data.get("secs").and_then(|v| v.as_u64()).unwrap_or(120).clamp(10, 600);
-            shared::open_pairing(secs);
-            json_reply(req, 200, json!({"secs": secs}));
-        }
-        ("/api/pair/answer", Method::Post) => {
-            shared::answer_pair(data.get("accept").and_then(|v| v.as_bool()).unwrap_or(false));
-            json_reply(req, 200, json!({"ok": true}));
+            let pin = shared::open_pairing(secs);
+            json_reply(req, 200, json!({"secs": secs, "pin": pin}));
         }
         ("/api/display", Method::Post) => {
             let name = str_field(&data, "name");
@@ -156,6 +134,22 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
             Ok(port) => json_reply(req, 200, json!({"port": port, "launched": daemon::launch_viewer(port)})),
             Err(e) => json_reply(req, 502, json!({"error": e.to_string()})),
         },
+        // Play the effect on screen exactly as configured (used by "Preview on screen" and /effect test).
+        ("/api/effect/test", Method::Post) => {
+            let anim = data
+                .get("animation")
+                .and_then(|a| serde_json::from_value::<kvm_protocol::Animation>(a.clone()).ok())
+                .unwrap_or_else(|| store::load_config().animation);
+            let mut cfg = store::load_config();
+            cfg.animation = anim;
+            match cfg.validate() {
+                Ok(()) => {
+                    crate::fx_win::preview(anim);
+                    json_reply(req, 200, json!({"ok": true}))
+                }
+                Err(e) => json_reply(req, 400, json!({"error": e})),
+            }
+        }
         ("/api/show", Method::Post) => {
             gui::show_window();
             json_reply(req, 200, json!({"ok": true}));

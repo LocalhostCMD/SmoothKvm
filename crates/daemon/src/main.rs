@@ -38,6 +38,8 @@ mod capture_win;
 #[cfg(windows)]
 mod daemon;
 #[cfg(windows)]
+mod fx_win;
+#[cfg(windows)]
 mod gui;
 #[cfg(windows)]
 mod inject_win;
@@ -116,21 +118,46 @@ impl Held {
     }
 }
 
-/// `service`: running as a background service (pairing prompts go to the terminal UI, not stdin).
-fn handle_session(stream: TcpStream, ident: &Identity, service: bool) -> io::Result<bool> {
-    let peer = stream.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
-    let est = secure::accept(stream, &ident.private)?;
+/// Never trust numbers that arrive over the network: a (paired, but possibly compromised) controller must not be
+/// able to fling the pointer across the planet, overflow arithmetic or scroll forever with a single event.
+fn sanitize(ev: InputEvent) -> InputEvent {
+    match ev {
+        InputEvent::MouseMoveRel { dx, dy } => InputEvent::MouseMoveRel { dx: dx.clamp(-30_000, 30_000), dy: dy.clamp(-30_000, 30_000) },
+        InputEvent::MouseMoveAbs { x, y } => InputEvent::MouseMoveAbs { x: x.clamp(-32_768, 32_767), y: y.clamp(-32_768, 32_767) },
+        InputEvent::Scroll { dx, dy } => InputEvent::Scroll { dx: dx.clamp(-100, 100), dy: dy.clamp(-100, 100) },
+        other => other,
+    }
+}
+
+fn handle_session(stream: TcpStream, ident: &Identity) -> io::Result<()> {
+    let ip = stream.peer_addr()?.ip();
+    let peer = ip.to_string();
+    // Strangers get a tiny budget (count + time) until they have proven who they are.
+    let slot = shared::preauth_enter(ip).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "too many unauthenticated connections"))?;
+    let pin = shared::pairing_pin();
+    let est = match secure::accept(stream, &ident.private, pin.as_deref()) {
+        Ok(e) => e,
+        Err(e) => {
+            // A failed attempt at the pairing PIN burns it: a guessed or captured PIN is never usable later.
+            if pin.is_some() && e.kind() == io::ErrorKind::PermissionDenied {
+                shared::burn_pairing();
+            }
+            return Err(e);
+        }
+    };
+    if est.pin_paired {
+        shared::burn_pairing(); // single use
+    }
     let mut conn = est.conn;
-    let svc = |name: &str, sas: &str| shared::prompt_pair(name, sas);
-    let confirm: &dyn Fn(&str, &str) -> bool = if service { &svc } else { &net::cli_confirm };
-    let newly_paired = net::authorize(&mut conn, &est.remote_key, &est.sas, shared::pairing_open(), &peer, confirm)?;
+    net::authorize(&mut conn, &est.remote_key, est.pin_paired, &peer)?;
+    drop(slot);
     let id = shared::session_start(&peer);
-    let result = session_loop(conn, &peer, newly_paired);
+    let result = session_loop(conn, &peer);
     shared::session_end(id);
     result
 }
 
-fn session_loop(mut conn: secure::SecureConn, peer: &str, newly_paired: bool) -> io::Result<bool> {
+fn session_loop(mut conn: secure::SecureConn, peer: &str) -> io::Result<()> {
     println!("secure session with {peer}");
     // The sender pings every second; silence for 10s means it's gone.
     conn.set_timeouts(Some(Duration::from_secs(10)), Some(Duration::from_secs(5)))?;
@@ -145,15 +172,16 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, newly_paired: bool) ->
                 let local = TcpStream::connect_timeout(&"127.0.0.1:5900".parse().unwrap(), Duration::from_secs(3))?;
                 net::pump(local, conn)?;
                 println!("display tunnel closed");
-                return Ok(newly_paired);
+                return Ok(());
             }
             Ok(Message::DisplayCmd(action)) if first => {
                 println!("display command from {peer}: {action:?}");
                 let (running, detail) = display_command(action);
                 conn.send(&Message::DisplayState { running, detail })?;
-                return Ok(newly_paired);
+                return Ok(());
             }
             Ok(Message::Input(ev)) => {
+                let ev = sanitize(ev);
                 held.track(&ev);
                 inject(&ev);
             }
@@ -165,7 +193,7 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, newly_paired: bool) ->
     };
     held.release_all();
     println!("session ended: {end}");
-    Ok(newly_paired)
+    Ok(())
 }
 
 const MAX_SESSIONS: usize = 16;
@@ -174,9 +202,8 @@ const MAX_SESSIONS: usize = 16;
 /// on Windows it follows the "let other computers control this PC" setting).
 pub static RECEIVE_ENABLED: AtomicBool = AtomicBool::new(true);
 
-/// `ctl_server`: also run the receiver control API (Linux service). `ui_confirm`: pairing codes are
-/// confirmed in the app/terminal UI instead of on stdin.
-fn serve(addr: &str, pair: bool, ctl_server: bool, ui_confirm: bool) -> io::Result<()> {
+/// `ctl_server`: also run the receiver control API (Linux service).
+fn serve(addr: &str, pair: bool, ctl_server: bool) -> io::Result<()> {
     let ident = Arc::new(Identity::load_or_create()?);
     let listener = TcpListener::bind(addr)?;
     println!("SmoothKvm receiver {VERSION} listening on {addr} (device id {})", store::short(&secure::to_hex(&ident.public)));
@@ -187,8 +214,8 @@ fn serve(addr: &str, pair: bool, ctl_server: bool, ui_confirm: bool) -> io::Resu
         std::thread::spawn(move || rctl::serve(server, token, id));
     }
     if pair {
-        shared::open_pairing(120);
-        println!("PAIRING MODE on for 120 seconds.");
+        let pin = shared::open_pairing(120);
+        println!("PAIRING OPEN for 120 seconds. On the controlling PC, pair using this PIN:  {pin}");
     }
     let active = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
@@ -203,10 +230,8 @@ fn serve(addr: &str, pair: bool, ctl_server: bool, ui_confirm: bool) -> io::Resu
         }
         let (ident, active) = (ident.clone(), active.clone());
         std::thread::spawn(move || {
-            match handle_session(stream, &ident, ui_confirm) {
-                Ok(true) => shared::close_pairing(),
-                Ok(false) => {}
-                Err(e) => println!("rejected/ended: {e}"),
+            if let Err(e) = handle_session(stream, &ident) {
+                println!("rejected/ended: {}", shared::clean(&e.to_string()));
             }
             active.fetch_sub(1, Ordering::SeqCst);
         });
@@ -222,7 +247,7 @@ pub fn sync_receiver(enabled: bool, port: u16) {
     RECEIVE_ENABLED.store(enabled, Ordering::SeqCst);
     if enabled && !STARTED.swap(true, Ordering::SeqCst) {
         std::thread::spawn(move || {
-            if let Err(e) = serve(&format!("0.0.0.0:{port}"), false, false, true) {
+            if let Err(e) = serve(&format!("0.0.0.0:{port}"), false, false) {
                 eprintln!("cannot start the receiver on port {port}: {e}");
                 STARTED.store(false, Ordering::SeqCst);
             }
@@ -230,9 +255,9 @@ pub fn sync_receiver(enabled: bool, port: u16) {
     }
 }
 
-fn test(addr: &str, pairing: bool) -> io::Result<()> {
+fn test(addr: &str, pin: Option<&str>) -> io::Result<()> {
     let ident = Identity::load_or_create()?;
-    let mut conn = net::connect(addr, &ident, pairing, &net::cli_confirm)?;
+    let mut conn = net::connect(addr, &ident, pin, "")?;
     for (dx, dy) in [(8, 0), (0, 8), (-8, 0), (0, -8)] {
         for _ in 0..20 {
             conn.send(&Message::Input(InputEvent::MouseMoveRel { dx, dy }))?;
@@ -256,7 +281,7 @@ fn view(addr_override: Option<String>) -> io::Result<()> {
         let (ident, addr) = (ident.clone(), addr.clone());
         std::thread::spawn(move || {
             let res = (|| -> io::Result<()> {
-                let mut conn = net::connect(&addr, &ident, false, &|_, _| false)?;
+                let mut conn = net::connect(&addr, &ident, None, "")?;
                 conn.send(&Message::OpenDisplay)?;
                 net::pump(s, conn)
             })();
@@ -270,7 +295,7 @@ fn view(addr_override: Option<String>) -> io::Result<()> {
 
 fn usage() {
     eprintln!(
-        "SmoothKvm {VERSION}\n  SmoothKvm                 interactive terminal UI (type /help)\n  Windows:  open | start | stop | status | install [--autostart] | uninstall\n  Linux:    service | listen [--pair] | display start [WxH]|stop|status\n  Both:     view <addr> | test <addr> [--pair] | --version"
+        "SmoothKvm {VERSION}\n  SmoothKvm                 interactive terminal UI (type /help)\n  Windows:  open | start | stop | status | install [--autostart] | uninstall\n  Linux:    service | listen [--pair] | display start [WxH]|stop|status\n  Both:     view <addr> | test <addr> [--pin PIN] | --version"
     );
 }
 
@@ -303,10 +328,10 @@ fn main() -> io::Result<()> {
         Some("install") => app::install(flag("--autostart")),
         #[cfg(windows)]
         Some("uninstall") => app::uninstall(),
-        Some("service") => serve(&format!("0.0.0.0:{}", cfg.port), false, true, true),
+        Some("service") => serve(&format!("0.0.0.0:{}", cfg.port), false, true),
         Some("listen") => {
             let addr = pos.first().map(|s| s.to_string()).unwrap_or_else(|| format!("0.0.0.0:{}", cfg.port));
-            serve(&addr, flag("--pair"), false, false)
+            serve(&addr, flag("--pair"), false)
         }
         Some("display") => {
             #[cfg(unix)]
@@ -320,8 +345,8 @@ fn main() -> io::Result<()> {
         }
         Some("view") => view(pos.first().map(|s| s.to_string())),
         Some("test") => match pos.first() {
-            Some(a) => test(a, flag("--pair")),
-            None => Err(io::Error::new(io::ErrorKind::InvalidInput, "usage: SmoothKvm test <addr> [--pair]")),
+            Some(a) => test(a, args.iter().position(|x| x == "--pin").and_then(|i| args.get(i + 1)).map(String::as_str)),
+            None => Err(io::Error::new(io::ErrorKind::InvalidInput, "usage: SmoothKvm test <addr> [--pin 12345678]")),
         },
         _ => {
             usage();

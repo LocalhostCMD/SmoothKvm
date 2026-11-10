@@ -11,13 +11,14 @@ use ratatui::{DefaultTerminal, Frame};
 use serde_json::{json, Value};
 use std::io;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-const ACCENT: Color = Color::Rgb(217, 119, 87);
-const GOOD: Color = Color::Rgb(94, 190, 130);
-const BAD: Color = Color::Rgb(230, 100, 90);
-const WARN: Color = Color::Rgb(226, 179, 70);
-const DIM: Color = Color::Rgb(140, 146, 160);
+const ACCENT: Color = Color::Rgb(0, 229, 255);
+const MAGENTA: Color = Color::Rgb(255, 45, 149);
+const GOOD: Color = Color::Rgb(157, 255, 74);
+const BAD: Color = Color::Rgb(255, 82, 82);
+const WARN: Color = Color::Rgb(255, 211, 78);
+const DIM: Color = Color::Rgb(122, 130, 150);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -40,11 +41,12 @@ const SENDER_CMDS: &[(&str, &str)] = &[
     ("/screens", "list your screens"),
     ("/add", "/add <name> <left|right|top|bottom> <host:port> [WxH]"),
     ("/remove", "/remove <name>"),
-    ("/pair", "/pair <name>   pair with a screen (it must be in pairing mode)"),
+    ("/pair", "/pair <name> <PIN>   pair with a screen; the 8-digit PIN is shown on that device (run pair there)"),
     ("/display", "/display <name> start|stop|status [WxH]"),
     ("/view", "/view <name>   open that screen's virtual display"),
-    ("/effect", "/effect <bounce|elastic|slide|overshoot|spring|none> [ms] [px]"),
-    ("/curve", "/curve <x1> <y1> <x2> <y2>   your own cubic-bezier effect"),
+    ("/effect", "/effect <ripple|glow|sparks|comet|none> [rainbow|ocean|sunset|neon|mono] [700ms] [220px] [test]"),
+    ("/motion", "/motion <bounce|elastic|slide|overshoot|spring|custom>   how the effect moves"),
+    ("/curve", "/curve <x1> <y1> <x2> <y2>   your own motion curve (cubic-bezier)"),
     ("/game", "/game on|off   never switch screens while gaming"),
     ("/receive", "/receive on|off   let paired computers control THIS PC too"),
     ("/allow", "/allow [seconds]   let a new device pair with this PC (default 120)"),
@@ -61,7 +63,7 @@ const SENDER_CMDS: &[(&str, &str)] = &[
 
 const RECEIVER_CMDS: &[(&str, &str)] = &[
     ("/status", "show connections and settings"),
-    ("/pair", "/pair [seconds]   allow a new device to pair (default 120)"),
+    ("/pair", "/pair [seconds]   open pairing and show the 8-digit PIN to type on the controlling PC"),
     ("/devices", "list paired devices"),
     ("/unpair", "/unpair <name>"),
     ("/display", "/display start|stop|status [WxH]"),
@@ -164,7 +166,7 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             let mut out = vec![(Kind::Head, format!("SmoothKvm {VERSION} - this PC controls your screens"))];
             out.extend(remote_lines(&s));
             let an = &s["config"]["animation"];
-            out.push((Kind::Dim, format!("effect: {} {}ms {}px   game mode: {}{}", an["style"].as_str().unwrap_or("?"), an["duration_ms"], an["distance_px"], if s["config"]["game_guard"].as_bool().unwrap_or(true) { "on" } else { "off" }, if s["game_active"].as_bool().unwrap_or(false) { " (a full-screen app is running now)" } else { "" })));
+            out.push((Kind::Dim, format!("effect: {} {}ms {}px   game mode: {}{}", an["visual"].as_str().unwrap_or("?"), an["duration_ms"], an["size_px"], if s["config"]["game_guard"].as_bool().unwrap_or(true) { "on" } else { "off" }, if s["game_active"].as_bool().unwrap_or(false) { " (a full-screen app is running now)" } else { "" })));
             if s["paused"].as_bool().unwrap_or(false) {
                 out.push((Kind::Bad, "STOPPED - screen switching is paused. Use /resume.".into()));
             }
@@ -214,17 +216,26 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             Ok(vec![(Kind::Good, format!("Removed {name}."))])
         }
         ("/pair", true) => {
-            let name = a.first().ok_or("usage: /pair <name>")?;
+            let (name, pin) = match (a.first(), a.get(1)) {
+                (Some(n), Some(p)) => (*n, *p),
+                _ => return Err("usage: pair <name> <8-digit PIN shown on that device>   (on that device run: pair)".into()),
+            };
+            if pin.len() != 8 || !pin.chars().all(|ch| ch.is_ascii_digit()) {
+                return Err("the PIN is 8 digits".into());
+            }
             let cfg = state_of(c)?["config"].clone();
             let i = remote_index(&cfg, name).ok_or("no such screen")?;
             let real = cfg["remotes"][i]["name"].as_str().unwrap_or(name).to_string();
-            c.post("/api/pair", &json!({"name": real}))?;
-            Ok(vec![(Kind::Info, format!("Pairing with {real}... a code will appear here. (The other device must be in pairing mode: /pair there.)"))])
+            c.post("/api/pair", &json!({"name": real, "pin": pin}))?;
+            Ok(vec![(Kind::Info, format!("Pairing with {real}... watch the screens panel."))])
         }
         ("/pair", false) => {
             let secs = a.first().and_then(|s| s.parse::<u64>().ok()).unwrap_or(120);
             let r = c.post("/api/pair/open", &json!({"secs": secs}))?;
-            Ok(vec![(Kind::Info, format!("Pairing is open for {}s. Now start pairing from the controlling PC.", r["secs"]))])
+            Ok(vec![
+                (Kind::Head, format!("PAIRING OPEN for {}s  -  PIN: {}", r["secs"], r["pin"].as_str().unwrap_or("?"))),
+                (Kind::Dim, "Type this PIN on the controlling PC. It works once, and any wrong try cancels it.".into()),
+            ])
         }
         ("/display", true) => {
             if a.len() < 2 {
@@ -263,17 +274,42 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             }])
         }
         ("/effect", true) => {
-            let style = style_name(a.first().ok_or("usage: /effect <bounce|elastic|slide|overshoot|spring|none> [ms] [px]")?).ok_or("unknown effect (try bounce, elastic, slide, overshoot, spring, none; or /curve)")?;
+            const VISUALS: [&str; 5] = ["None", "Ripple", "Glow", "Sparks", "Comet"];
+            const PALETTES: [&str; 5] = ["Rainbow", "Ocean", "Sunset", "Neon", "Mono"];
+            let pick = |list: &[&'static str], w: &str| list.iter().find(|x| x.eq_ignore_ascii_case(w)).copied();
             let mut cfg = state_of(c)?["config"].clone();
-            cfg["animation"]["style"] = json!(style);
-            if let Some(ms) = a.get(1).and_then(|s| s.parse::<u32>().ok()) {
-                cfg["animation"]["duration_ms"] = json!(ms);
+            let mut test = false;
+            for w in a {
+                if let Some(v) = pick(&VISUALS, w) {
+                    cfg["animation"]["visual"] = json!(v);
+                } else if let Some(p) = pick(&PALETTES, w) {
+                    cfg["animation"]["palette"] = json!(p);
+                } else if let Some(ms) = w.strip_suffix("ms").and_then(|n| n.parse::<u32>().ok()) {
+                    cfg["animation"]["duration_ms"] = json!(ms);
+                } else if let Some(px) = w.strip_suffix("px").and_then(|n| n.parse::<u32>().ok()) {
+                    cfg["animation"]["size_px"] = json!(px);
+                } else if w.eq_ignore_ascii_case("test") {
+                    test = true;
+                } else {
+                    return Err(format!("don't know \"{w}\". Try: effect ripple|glow|sparks|comet|none  rainbow|ocean|sunset|neon|mono  700ms  220px  test"));
+                }
             }
-            if let Some(px) = a.get(2).and_then(|s| s.parse::<u32>().ok()) {
-                cfg["animation"]["distance_px"] = json!(px);
+            if a.is_empty() {
+                return Err("usage: effect <ripple|glow|sparks|comet|none> [rainbow|ocean|sunset|neon|mono] [700ms] [220px] [test]".into());
             }
             set_config(c, &cfg)?;
-            Ok(vec![(Kind::Good, format!("Effect: {style} {}ms {}px", cfg["animation"]["duration_ms"], cfg["animation"]["distance_px"]))])
+            if test {
+                c.post("/api/effect/test", &json!({"animation": cfg["animation"]}))?;
+            }
+            let an = &cfg["animation"];
+            Ok(vec![(Kind::Good, format!("Effect: {} / {} / {}ms / {}px", an["visual"].as_str().unwrap_or("?"), an["palette"].as_str().unwrap_or("?"), an["duration_ms"], an["size_px"]))])
+        }
+        ("/motion", true) => {
+            let style = style_name(a.first().ok_or("usage: motion <bounce|elastic|slide|overshoot|spring|custom>")?).ok_or("unknown motion (bounce, elastic, slide, overshoot, spring, custom)")?;
+            let mut cfg = state_of(c)?["config"].clone();
+            cfg["animation"]["style"] = json!(style);
+            set_config(c, &cfg)?;
+            Ok(vec![(Kind::Good, format!("Motion: {style}"))])
         }
         ("/curve", true) => {
             let v: Vec<f64> = a.iter().filter_map(|s| s.parse().ok()).collect();
@@ -314,7 +350,10 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
         ("/allow", true) => {
             let secs = a.first().and_then(|s| s.parse::<u64>().ok()).unwrap_or(120);
             let r = c.post("/api/pair/open", &json!({"secs": secs}))?;
-            Ok(vec![(Kind::Info, format!("Pairing open for {}s. Start pairing from the other computer now (needs /receive on).", r["secs"]))])
+            Ok(vec![
+                (Kind::Head, format!("PAIRING OPEN for {}s  -  PIN: {}", r["secs"], r["pin"].as_str().unwrap_or("?"))),
+                (Kind::Dim, "Type this PIN on the other computer (needs: receive on). One try only.".into()),
+            ])
         }
         ("/stop", true) => {
             c.post("/api/emergency", &json!({"on": true}))?;
@@ -356,7 +395,7 @@ struct App {
     input: String,
     history: Vec<String>,
     hist: Option<usize>,
-    lines: Out,
+    log: Vec<(Kind, String, u64)>,
     state: Option<Value>,
     offline: bool,
     tx: Sender<Msg>,
@@ -364,6 +403,22 @@ struct App {
     quit: bool,
     scroll: usize,
     busy: u32,
+    started: Instant,
+}
+
+/// "/pair" -> "pair" in messages: the UI accepts commands with or without the slash.
+fn unslash(s: &str) -> String {
+    let cs: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut at_word_start = true;
+    for (i, &ch) in cs.iter().enumerate() {
+        if ch == '/' && at_word_start && cs.get(i + 1).map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+            continue;
+        }
+        out.push(ch);
+        at_word_start = ch.is_whitespace() || ch == '(';
+    }
+    out
 }
 
 impl App {
@@ -379,58 +434,61 @@ impl App {
         }
     }
 
-    fn pairing(&self) -> Option<(String, String)> {
-        let p = &self.state.as_ref()?["pairing"];
-        Some((p["name"].as_str()?.to_string(), p["sas"].as_str()?.to_string()))
-    }
-
-    fn say(&mut self, kind: Kind, s: impl Into<String>) {
-        self.lines.push((kind, s.into()));
+    fn say(&mut self, kind: Kind, s: impl AsRef<str>) {
+        // text can come from other machines: strip anything that could drive the terminal
+        let text = unslash(&crate::shared::clean(s.as_ref()));
+        let at = self.started.elapsed().as_secs();
+        self.log.push((kind, text, at));
+        if self.log.len() > 500 {
+            self.log.remove(0);
+        }
         self.scroll = 0;
     }
 
     fn help(&mut self) {
-        self.say(Kind::Head, "Commands");
+        self.say(Kind::Head, "COMMANDS (the leading / is optional)");
         for (c, d) in self.cmds().to_vec() {
-            self.say(Kind::Info, format!("  {c:<10} {}", if d.starts_with('/') { d.to_string() } else { d.to_string() }));
+            self.say(Kind::Info, format!("{:<10} {}", c.trim_start_matches('/'), d));
         }
-        self.say(Kind::Dim, "Tip: press Scroll Lock three times quickly for the emergency stop on the controlling PC.");
+        self.say(Kind::Dim, "keys: F2 = emergency stop, F3 = resume, Tab completes, PgUp/PgDn scroll");
+    }
+
+    fn run_line(&mut self, line: String) {
+        let (client, tx, mode) = (self.client.clone(), self.tx.clone(), self.mode().to_string());
+        self.busy += 1;
+        std::thread::spawn(move || {
+            let out = exec(&client, &mode, &line).unwrap_or_else(|e| vec![(Kind::Bad, e)]);
+            let _ = tx.send(Msg::Out(out));
+        });
     }
 
     fn submit(&mut self) {
-        let line = self.input.trim().to_string();
+        let typed = self.input.trim().to_string();
         self.input.clear();
         self.hist = None;
-        if line.is_empty() {
+        if typed.is_empty() {
             return;
         }
-        if self.history.last() != Some(&line) {
-            self.history.push(line.clone());
+        if self.history.last() != Some(&typed) {
+            self.history.push(typed.clone());
         }
-        self.say(Kind::User, format!("> {line}"));
+        self.say(Kind::User, format!("❯ {typed}"));
+        let line = if typed.starts_with('/') { typed } else { format!("/{typed}") };
         match line.split_whitespace().next().unwrap_or("").to_lowercase().as_str() {
             "/quit" | "/exit" | "/q" => self.quit = true,
-            "/help" | "/?" => self.help(),
-            "/clear" => self.lines.clear(),
-            c if c.starts_with('/') => {
-                let (client, tx, mode) = (self.client.clone(), self.tx.clone(), self.mode().to_string());
-                self.busy += 1;
-                std::thread::spawn(move || {
-                    let out = exec(&client, &mode, &line).unwrap_or_else(|e| vec![(Kind::Bad, e)]);
-                    let _ = tx.send(Msg::Out(out));
-                });
-            }
-            _ => self.say(Kind::Dim, "Commands start with /  -  try /help"),
+            "/help" | "/?" | "/h" => self.help(),
+            "/clear" | "/cls" => self.log.clear(),
+            _ => self.run_line(line),
         }
     }
 
     fn complete(&mut self) {
-        if !self.input.starts_with('/') || self.input.contains(' ') {
+        if self.input.contains(' ') {
             return;
         }
-        let first = self.cmds().iter().find(|(c, _)| c.starts_with(&self.input.to_lowercase())).map(|(c, _)| c.to_string());
-        if let Some(c) = first {
-            self.input = format!("{c} ");
+        let typed = format!("/{}", self.input.trim_start_matches('/').to_lowercase());
+        if let Some((c, _)) = self.cmds().iter().find(|(c, _)| c.starts_with(&typed)) {
+            self.input = format!("{} ", c.trim_start_matches('/'));
         }
     }
 
@@ -441,14 +499,12 @@ impl App {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         match k.code {
             KeyCode::Char('c') | KeyCode::Char('d') if ctrl => self.quit = true,
-            KeyCode::Char(c) if !ctrl && self.input.is_empty() && self.pairing().is_some() && matches!(c, 'y' | 'Y' | 'n' | 'N') => {
-                let accept = matches!(c, 'y' | 'Y');
-                let (client, tx) = (self.client.clone(), self.tx.clone());
-                std::thread::spawn(move || {
-                    let _ = client.post("/api/pair/answer", &json!({"accept": accept}));
-                    let _ = tx.send(Msg::Out(vec![(if accept { Kind::Good } else { Kind::Info }, if accept { "Confirmed - finishing pairing...".into() } else { "Pairing cancelled.".into() })]));
-                });
+            KeyCode::F(1) => self.help(),
+            KeyCode::F(2) => {
+                self.say(Kind::Bad, "EMERGENCY STOP (F2)");
+                self.run_line("/stop".into());
             }
+            KeyCode::F(3) => self.run_line("/resume".into()),
             KeyCode::Char(c) if !ctrl => self.input.push(c),
             KeyCode::Backspace => {
                 self.input.pop();
@@ -499,12 +555,12 @@ impl App {
 
 fn style_of(k: Kind) -> Style {
     match k {
-        Kind::Head => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-        Kind::Info => Style::new(),
+        Kind::Head => Style::new().fg(MAGENTA).add_modifier(Modifier::BOLD),
+        Kind::Info => Style::new().fg(Color::Rgb(220, 224, 235)),
         Kind::Good => Style::new().fg(GOOD),
         Kind::Bad => Style::new().fg(BAD),
         Kind::Dim => Style::new().fg(DIM),
-        Kind::User => Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+        Kind::User => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
     }
 }
 
@@ -519,129 +575,253 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
     chars.chunks(w).map(|c| c.iter().collect()).collect()
 }
 
-fn header_line(app: &App) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled("◆ ", Style::new().fg(ACCENT)),
-        Span::styled("SmoothKvm", Style::new().add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" v{VERSION}   "), Style::new().fg(DIM)),
-    ];
+fn chip(text: &str, bg: Color) -> Span<'static> {
+    Span::styled(format!(" {text} "), Style::new().fg(Color::Black).bg(bg).add_modifier(Modifier::BOLD))
+}
+
+fn heading(text: &str) -> Line<'static> {
+    Line::from(Span::styled(format!(" {text}"), Style::new().fg(MAGENTA).add_modifier(Modifier::BOLD)))
+}
+
+fn kv(k: &str, v: String, vc: Color) -> Line<'static> {
+    Line::from(vec![Span::styled(format!(" {k:<11}"), Style::new().fg(DIM)), Span::styled(v, Style::new().fg(vc))])
+}
+
+fn arrow(edge: &str) -> &'static str {
+    match edge {
+        "Left" => "←",
+        "Right" => "→",
+        "Top" => "↑",
+        _ => "↓",
+    }
+}
+
+fn status_chips(app: &App) -> Line<'static> {
+    let mut v: Vec<Span> = vec![Span::raw(" ")];
     let s = match (&app.state, app.offline) {
-        (None, _) | (_, true) => {
-            spans.push(Span::styled("○ not running - waiting for the app/service...", Style::new().fg(BAD)));
-            return Line::from(spans);
-        }
         (Some(s), false) => s,
+        _ => {
+            v.push(chip("OFFLINE", BAD));
+            v.push(Span::styled("  the SmoothKvm app/service is not running", Style::new().fg(DIM)));
+            return Line::from(v);
+        }
     };
     if s["mode"] == "receiver" {
         let n = s["sessions"].as_array().map(|a| a.len()).unwrap_or(0);
-        spans.push(Span::styled(format!("● screen mode · {n} connection(s)"), Style::new().fg(if n > 0 { GOOD } else { WARN })));
-        let open = s["pairing_open_secs"].as_u64().unwrap_or(0);
-        if open > 0 {
-            spans.push(Span::styled(format!(" · pairing open {open}s"), Style::new().fg(WARN)));
+        v.push(chip("SCREEN MODE", ACCENT));
+        v.push(Span::raw(" "));
+        v.push(chip(&format!("{n} CONNECTED"), if n > 0 { GOOD } else { WARN }));
+        if s["pairing_open_secs"].as_u64().unwrap_or(0) > 0 {
+            v.push(Span::raw(" "));
+            v.push(chip("PAIRING OPEN", WARN));
         }
     } else {
         let remotes = s["config"]["remotes"].as_array().cloned().unwrap_or_default();
         let enabled = remotes.iter().filter(|r| r["enabled"].as_bool().unwrap_or(true)).count();
         let up = remotes.iter().filter(|r| s["status"][r["name"].as_str().unwrap_or("")]["state"] == "connected").count();
-        spans.push(Span::styled(format!("● {up}/{enabled} screens connected"), Style::new().fg(if up > 0 { GOOD } else { WARN })));
+        v.push(chip("CONTROLLER", ACCENT));
+        v.push(Span::raw(" "));
+        v.push(chip(&format!("{up}/{enabled} ONLINE"), if up > 0 { GOOD } else { WARN }));
         if s["paused"].as_bool().unwrap_or(false) {
-            spans.push(Span::styled(" · STOPPED", Style::new().fg(BAD).add_modifier(Modifier::BOLD)));
+            v.push(Span::raw(" "));
+            v.push(chip("■ STOPPED", BAD));
         }
         if s["game_active"].as_bool().unwrap_or(false) {
-            spans.push(Span::styled(" · game mode active", Style::new().fg(WARN)));
+            v.push(Span::raw(" "));
+            v.push(chip("GAME MODE ACTIVE", WARN));
         }
     }
-    Line::from(spans)
+    Line::from(v)
+}
+
+fn pin_chip(pin: &str) -> Span<'static> {
+    Span::styled(format!(" {pin} "), Style::new().fg(Color::Black).bg(WARN).add_modifier(Modifier::BOLD))
+}
+
+fn left_lines(app: &App) -> Vec<Line<'static>> {
+    let mut out: Vec<Line> = Vec::new();
+    let Some(s) = app.state.as_ref().filter(|_| !app.offline) else {
+        out.push(Line::styled(" waiting for the app...", Style::new().fg(DIM)));
+        return out;
+    };
+    let peers = s["peers"].as_array().map(|a| a.len()).unwrap_or(0);
+    if s["mode"] == "receiver" {
+        out.push(heading("CONNECTIONS"));
+        let sessions = s["sessions"].as_array().cloned().unwrap_or_default();
+        if sessions.is_empty() {
+            out.push(Line::styled("  nobody connected", Style::new().fg(DIM)));
+        }
+        for x in sessions {
+            out.push(Line::from(vec![
+                Span::styled("  ▌ ", Style::new().fg(GOOD)),
+                Span::raw(format!("{:<16}", x["peer"].as_str().unwrap_or("?"))),
+                Span::styled(format!("{}s", x["secs"]), Style::new().fg(DIM)),
+            ]));
+        }
+        out.push(Line::raw(""));
+        out.push(heading("PAIRING"));
+        let open = s["pairing_open_secs"].as_u64().unwrap_or(0);
+        if open > 0 {
+            out.push(Line::from(vec![
+                Span::raw("  PIN "),
+                pin_chip(s["pairing_pin"].as_str().unwrap_or("????????")),
+                Span::styled(format!("  {open}s left"), Style::new().fg(DIM)),
+            ]));
+            out.push(Line::styled("  one try, then it burns", Style::new().fg(DIM)));
+        } else {
+            out.push(Line::styled("  closed - type  pair  to open", Style::new().fg(DIM)));
+        }
+        out.push(Line::raw(""));
+        out.push(kv("DISPLAY", s["display"]["detail"].as_str().unwrap_or("?").to_string(), Color::White));
+        out.push(kv("PAIRED", format!("{peers} device(s)"), Color::White));
+        return out;
+    }
+    out.push(heading("SCREENS"));
+    let remotes = s["config"]["remotes"].as_array().cloned().unwrap_or_default();
+    if remotes.is_empty() {
+        out.push(Line::styled("  none yet", Style::new().fg(DIM)));
+        out.push(Line::styled("  add Server right 100.64.0.5:24800", Style::new().fg(DIM)));
+    }
+    for r in remotes {
+        let name = r["name"].as_str().unwrap_or("?");
+        let state = s["status"][name]["state"].as_str().unwrap_or("connecting");
+        let (col, label) = match state {
+            "connected" => (GOOD, "ONLINE"),
+            "not_paired" => (WARN, "NOT PAIRED"),
+            "disabled" => (DIM, "OFF"),
+            "offline" => (BAD, "OFFLINE"),
+            _ => (WARN, "..."),
+        };
+        out.push(Line::from(vec![
+            Span::styled("  ▌ ", Style::new().fg(col)),
+            Span::raw(format!("{:<12}", name.chars().take(11).collect::<String>())),
+            Span::styled(format!("{} {:<7}", arrow(r["edge"].as_str().unwrap_or("")), r["edge"].as_str().unwrap_or("").to_lowercase()), Style::new().fg(DIM)),
+            Span::styled(label, Style::new().fg(col).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+    out.push(Line::raw(""));
+    let an = &s["config"]["animation"];
+    out.push(heading("EFFECT"));
+    out.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(an["visual"].as_str().unwrap_or("?").to_lowercase(), Style::new().fg(ACCENT)),
+        Span::styled(format!(" · {} · {}ms · {}px", an["palette"].as_str().unwrap_or("?").to_lowercase(), an["duration_ms"], an["size_px"]), Style::new().fg(DIM)),
+    ]));
+    out.push(kv("MOTION", an["style"].as_str().unwrap_or("?").to_lowercase(), Color::White));
+    out.push(Line::raw(""));
+    let guard = s["config"]["game_guard"].as_bool().unwrap_or(true);
+    out.push(kv("GAME MODE", if guard { "on".into() } else { "off".into() }, if guard { GOOD } else { DIM }));
+    out.push(kv("EMERGENCY", "F2 stop · F3 resume".into(), WARN));
+    out.push(kv("", "or Scroll Lock x3".into(), DIM));
+    out.push(Line::raw(""));
+    let recv = s["config"]["receive"].as_bool().unwrap_or(false);
+    out.push(kv("THIS PC", if recv { "can be controlled".into() } else { "controls only".into() }, if recv { ACCENT } else { DIM }));
+    if recv {
+        let n = s["sessions"].as_array().map(|a| a.len()).unwrap_or(0);
+        out.push(kv("", format!("{n} connected"), Color::White));
+        if s["pairing_open_secs"].as_u64().unwrap_or(0) > 0 {
+            out.push(Line::from(vec![Span::raw("  PIN "), pin_chip(s["pairing_pin"].as_str().unwrap_or("????????"))]));
+        }
+    }
+    out.push(kv("PAIRED", format!("{peers} device(s)"), Color::White));
+    out
+}
+
+fn suggestions(app: &App) -> Vec<Span<'static>> {
+    let typed = app.input.to_lowercase();
+    let typed = typed.trim_start_matches('/');
+    match typed.split_once(' ') {
+        Some((cmd, _)) => app
+            .cmds()
+            .iter()
+            .find(|(c, _)| c.trim_start_matches('/') == cmd)
+            .map(|(_, d)| vec![Span::styled(format!(" {}", unslash(d)), Style::new().fg(WARN))])
+            .unwrap_or_default(),
+        None => {
+            let mut v = vec![Span::raw(" ")];
+            for (c, _) in app.cmds().iter().filter(|(c, _)| c.trim_start_matches('/').starts_with(typed)) {
+                v.push(Span::styled(format!("[{}]", c.trim_start_matches('/')), Style::new().fg(ACCENT)));
+                v.push(Span::raw(" "));
+            }
+            v
+        }
+    }
 }
 
 fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
-    let sugg = suggestions(app);
-    let pair = app.pairing();
-    let [head, body, sugg_area, pair_area, input_area, foot]: [Rect; 6] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(3),
-        Constraint::Length(sugg.len().min(8) as u16),
-        Constraint::Length(if pair.is_some() { 3 } else { 0 }),
+    let [title, body, chips, input, foot]: [Rect; 5] = Layout::vertical([
         Constraint::Length(3),
+        Constraint::Min(6),
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(area);
 
-    f.render_widget(Paragraph::new(header_line(app)), head);
+    // title bar
+    let tb = Block::bordered()
+        .border_type(BorderType::Double)
+        .border_style(Style::new().fg(ACCENT))
+        .title(Span::styled(" ◢◤ S M O O T H K V M ◢◤ ", Style::new().fg(MAGENTA).add_modifier(Modifier::BOLD)))
+        .title(Line::from(Span::styled(format!(" v{VERSION} "), Style::new().fg(DIM))).right_aligned());
+    f.render_widget(Paragraph::new(status_chips(app)).block(tb), title);
 
-    // transcript (with a welcome box first)
-    let w = body.width.saturating_sub(2) as usize;
+    // two panels
+    let [left, right]: [Rect; 2] = Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(body);
+    let lb = Block::bordered().border_type(BorderType::Double).border_style(Style::new().fg(ACCENT)).title(Span::styled(" STATUS ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)));
+    f.render_widget(Paragraph::new(left_lines(app)).block(lb), left);
+
+    let rb = Block::bordered().border_type(BorderType::Double).border_style(Style::new().fg(MAGENTA)).title(Span::styled(" ACTIVITY ", Style::new().fg(MAGENTA).add_modifier(Modifier::BOLD)));
+    let inner_w = right.width.saturating_sub(2) as usize;
+    let inner_h = right.height.saturating_sub(2) as usize;
     let mut rows: Vec<Line> = Vec::new();
-    let box_w = 46.min(w.max(10));
-    let pad = |s: &str| format!("│ {:<width$} │", s, width = box_w.saturating_sub(4));
-    rows.push(Line::styled(format!("╭{}╮", "─".repeat(box_w.saturating_sub(2))), Style::new().fg(ACCENT)));
-    rows.push(Line::styled(pad("✻ Welcome to SmoothKvm"), Style::new().fg(ACCENT)));
-    rows.push(Line::styled(pad("One keyboard and mouse, every screen."), Style::new().fg(DIM)));
-    rows.push(Line::styled(pad("/help for commands · /stop = emergency stop"), Style::new().fg(DIM)));
-    rows.push(Line::styled(format!("╰{}╯", "─".repeat(box_w.saturating_sub(2))), Style::new().fg(ACCENT)));
-    rows.push(Line::raw(""));
-    for (k, text) in &app.lines {
-        for (i, chunk) in wrap(text, w).into_iter().enumerate() {
-            let t = if i > 0 && *k == Kind::User { format!("  {chunk}") } else { chunk };
-            rows.push(Line::styled(t, style_of(*k)));
+    if app.log.is_empty() {
+        rows.push(Line::styled(" ready.  type  help  or press F1", Style::new().fg(DIM)));
+    }
+    for (k, text, at) in &app.log {
+        let stamp = format!("{:02}:{:02} ", at / 60 % 100, at % 60);
+        for (i, chunk) in wrap(text, inner_w.saturating_sub(7)).into_iter().enumerate() {
+            let lead = if i == 0 { stamp.clone() } else { "      ".to_string() };
+            rows.push(Line::from(vec![Span::styled(lead, Style::new().fg(DIM)), Span::styled(chunk, style_of(*k))]));
         }
     }
     if app.busy > 0 {
-        rows.push(Line::styled("✻ working...", Style::new().fg(ACCENT)));
+        rows.push(Line::styled("      working...", Style::new().fg(WARN)));
     }
-    let h = body.height as usize;
     let total = rows.len();
     let end = total.saturating_sub(app.scroll.min(total.saturating_sub(1)));
-    let start = end.saturating_sub(h);
-    f.render_widget(Paragraph::new(rows[start..end].to_vec()), Rect { x: body.x + 1, width: body.width.saturating_sub(1), ..body });
+    let start = end.saturating_sub(inner_h);
+    f.render_widget(Paragraph::new(rows[start..end].to_vec()).block(rb), right);
 
-    // command suggestions
-    if !sugg.is_empty() {
-        let lines: Vec<Line> = sugg
-            .iter()
-            .take(8)
-            .enumerate()
-            .map(|(i, (c, d))| {
-                Line::from(vec![
-                    Span::styled(format!(" {c:<10}"), if i == 0 { Style::new().fg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::new().fg(ACCENT) }),
-                    Span::styled(format!(" {d}"), Style::new().fg(DIM)),
-                ])
-            })
-            .collect();
-        f.render_widget(Paragraph::new(lines), sugg_area);
-    }
-
-    // inline pairing prompt
-    if let Some((name, sas)) = pair {
-        let text = Line::from(vec![
-            Span::styled(format!(" Pair with {name}?  code "), Style::new()),
-            Span::styled(sas, Style::new().fg(WARN).add_modifier(Modifier::BOLD)),
-            Span::styled("  - does the other device show the same code?  ", Style::new()),
-            Span::styled("[y] yes  [n] no", Style::new().fg(ACCENT)),
-        ]);
-        f.render_widget(Paragraph::new(text).block(Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(WARN))), pair_area);
-    }
-
-    // input box
-    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(DIM));
-    f.render_widget(Paragraph::new(Line::from(vec![Span::styled("> ", Style::new().fg(ACCENT)), Span::raw(app.input.clone())])).block(block), input_area);
-    let cx = input_area.x + 3 + app.input.chars().count() as u16;
-    f.set_cursor_position((cx.min(input_area.right().saturating_sub(2)), input_area.y + 1));
-
-    f.render_widget(Paragraph::new(Line::styled("  /help · Tab complete · ↑↓ history · PgUp/PgDn scroll · Ctrl+C quit", Style::new().fg(DIM))), foot);
-}
-
-fn suggestions(app: &App) -> Vec<(&'static str, &'static str)> {
-    let inp = app.input.to_lowercase();
-    if !inp.starts_with('/') {
-        return vec![];
-    }
-    match inp.split_once(' ') {
-        // after the command name: show its usage
-        Some((cmd, _)) => app.cmds().iter().filter(|(c, _)| *c == cmd).copied().collect(),
-        None => app.cmds().iter().filter(|(c, _)| c.starts_with(&inp)).copied().collect(),
-    }
+    // command hints, prompt, footer
+    f.render_widget(Paragraph::new(Line::from(suggestions(app))), chips);
+    let bg = Color::Rgb(22, 24, 38);
+    let prompt = Line::from(vec![
+        Span::styled(" smoothkvm", Style::new().fg(MAGENTA).bg(bg).add_modifier(Modifier::BOLD)),
+        Span::styled(" ❯ ", Style::new().fg(ACCENT).bg(bg)),
+        Span::styled(app.input.clone(), Style::new().fg(Color::White).bg(bg)),
+    ]);
+    f.render_widget(Paragraph::new(prompt).style(Style::new().bg(bg)), input);
+    let cx = input.x + 13 + app.input.chars().count() as u16;
+    f.set_cursor_position((cx.min(input.right().saturating_sub(1)), input.y));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" F1", Style::new().fg(ACCENT)),
+            Span::styled(" help  ", Style::new().fg(DIM)),
+            Span::styled("F2", Style::new().fg(BAD).add_modifier(Modifier::BOLD)),
+            Span::styled(" STOP  ", Style::new().fg(DIM)),
+            Span::styled("F3", Style::new().fg(GOOD)),
+            Span::styled(" resume  ", Style::new().fg(DIM)),
+            Span::styled("Tab", Style::new().fg(ACCENT)),
+            Span::styled(" complete  ", Style::new().fg(DIM)),
+            Span::styled("PgUp/PgDn", Style::new().fg(ACCENT)),
+            Span::styled(" scroll  ", Style::new().fg(DIM)),
+            Span::styled("Ctrl+C", Style::new().fg(ACCENT)),
+            Span::styled(" quit", Style::new().fg(DIM)),
+        ])),
+        foot,
+    );
 }
 
 fn app_loop(term: &mut DefaultTerminal, client: Client) -> io::Result<()> {
@@ -655,7 +835,7 @@ fn app_loop(term: &mut DefaultTerminal, client: Client) -> io::Result<()> {
             std::thread::sleep(Duration::from_millis(1000));
         });
     }
-    let mut app = App { input: String::new(), history: vec![], hist: None, lines: vec![], state: None, offline: true, tx, client, quit: false, scroll: 0, busy: 0 };
+    let mut app = App { input: String::new(), history: vec![], hist: None, log: vec![], state: None, offline: true, tx, client, quit: false, scroll: 0, busy: 0, started: Instant::now() };
     while !app.quit {
         term.draw(|f| draw(f, &app))?;
         while let Ok(m) = rx.try_recv() {

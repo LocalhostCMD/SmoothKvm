@@ -62,19 +62,15 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
                     "peers": peers,
                     "sessions": shared::sessions(),
                     "pairing_open_secs": shared::pairing_remaining(),
-                    "pairing": shared::pending_pair(),
+                    "pairing_pin": shared::pairing_pin(),
                     "display": {"running": running, "detail": detail},
                 }),
             );
         }
         ("/api/pair/open", Method::Post) => {
             let secs = data.get("secs").and_then(|v| v.as_u64()).unwrap_or(120).clamp(10, 600);
-            shared::open_pairing(secs);
-            json_reply(req, 200, json!({"secs": secs}));
-        }
-        ("/api/pair/answer", Method::Post) => {
-            shared::answer_pair(data.get("accept").and_then(|v| v.as_bool()).unwrap_or(false));
-            json_reply(req, 200, json!({"ok": true}));
+            let pin = shared::open_pairing(secs);
+            json_reply(req, 200, json!({"secs": secs, "pin": pin}));
         }
         ("/api/peers/remove", Method::Post) => {
             let key = str_field(&data, "key");

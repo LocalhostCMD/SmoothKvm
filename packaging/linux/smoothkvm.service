@@ -10,5 +10,21 @@ ExecStart=/usr/bin/SmoothKvm service
 Restart=always
 RestartSec=2
 
+# Hardening: the service only needs the network, its own config folder and /dev/uinput.
+NoNewPrivileges=yes
+PrivateDevices=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
 [Install]
 WantedBy=multi-user.target

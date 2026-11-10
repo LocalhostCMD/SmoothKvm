@@ -23,6 +23,9 @@ pub fn reply(req: Request, code: u16, ctype: &str, body: String) {
         .with_header(header("X-Frame-Options", "DENY"))
         .with_header(header("X-Content-Type-Options", "nosniff"))
         .with_header(header("Referrer-Policy", "no-referrer"))
+        .with_header(header("Cross-Origin-Opener-Policy", "same-origin"))
+        .with_header(header("Cross-Origin-Resource-Policy", "same-origin"))
+        .with_header(header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), usb=()"))
         .with_header(header(
             "Content-Security-Policy",
             "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
@@ -45,7 +48,8 @@ pub fn host_ok(req: &Request) -> bool {
 }
 
 pub fn authed(req: &Request, token: &str) -> bool {
-    req.headers().iter().any(|h| h.field.equiv("X-Token") && h.value.as_str() == token)
+    // constant-time compare so response timing cannot be used to guess the token byte by byte
+    req.headers().iter().any(|h| h.field.equiv("X-Token") && kvm_protocol::secure::ct_eq(h.value.as_str().as_bytes(), token.as_bytes()))
 }
 
 pub fn read_json(req: &mut Request) -> Value {

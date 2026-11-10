@@ -2,13 +2,12 @@
 //! runs the input capture and serves the config panel.
 use crate::store::{self, Identity};
 use crate::{capture_win, net, panel, shared};
-use kvm_protocol::{Config, DisplayAction, Message, Remote};
-use std::collections::HashMap;
+use kvm_protocol::{Config, DisplayAction, InputEvent, Message, Remote};
 use std::io;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 static GEN: AtomicU64 = AtomicU64::new(0);
@@ -76,7 +75,6 @@ fn remote_thread(
     ident: Arc<Identity>,
     ctl: capture_win::Controller,
 ) {
-    let confirm = |_ip: &str, sas: &str| shared::prompt_pair(&r.name, sas);
     while GEN.load(Ordering::SeqCst) == generation {
         if r.addr.trim().is_empty() {
             shared::set_status(&r.name, "offline", "no address set");
@@ -84,8 +82,8 @@ fn remote_thread(
             continue;
         }
         shared::set_status(&r.name, "connecting", "");
-        let want_pair = shared::take_pair_request(&r.name);
-        match net::connect(&r.addr, &ident, want_pair, &confirm) {
+        let pin = shared::take_pair_request(&r.name);
+        match net::connect(&r.addr, &ident, pin.as_deref(), &r.name) {
             Ok(mut conn) => {
                 shared::set_status(&r.name, "connected", "");
                 while rx.try_recv().is_ok() {}
@@ -96,7 +94,23 @@ fn remote_thread(
                     }
                     match rx.recv_timeout(Duration::from_secs(1)) {
                         Ok(m) => {
-                            if let Err(e) = conn.send(&m) {
+                            // A mouse can produce 1000 moves a second: merge whatever is already queued into
+                            // fewer messages so the network carries far fewer packets (same result, less latency).
+                            let mut batch = vec![m];
+                            while batch.len() < 512 {
+                                match rx.try_recv() {
+                                    Ok(n) => batch.push(n),
+                                    Err(_) => break,
+                                }
+                            }
+                            let mut failed = None;
+                            for msg in coalesce(batch) {
+                                if let Err(e) = conn.send(&msg) {
+                                    failed = Some(e);
+                                    break;
+                                }
+                            }
+                            if let Some(e) = failed {
                                 break e;
                             }
                         }
@@ -121,6 +135,46 @@ fn remote_thread(
     }
 }
 
+/// Merge runs of relative mouse moves and scrolls into one message each; every other message keeps its place,
+/// so key presses and button clicks still happen in exactly the order they were made.
+fn coalesce(batch: Vec<Message>) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::with_capacity(batch.len());
+    for m in batch {
+        match (&m, out.last_mut()) {
+            (
+                Message::Input(InputEvent::MouseMoveRel { dx, dy }),
+                Some(Message::Input(InputEvent::MouseMoveRel { dx: ax, dy: ay })),
+            ) => {
+                *ax = ax.saturating_add(*dx);
+                *ay = ay.saturating_add(*dy);
+            }
+            (Message::Input(InputEvent::Scroll { dx, dy }), Some(Message::Input(InputEvent::Scroll { dx: ax, dy: ay }))) => {
+                *ax = ax.saturating_add(*dx);
+                *ay = ay.saturating_add(*dy);
+            }
+            _ => out.push(m),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kvm_protocol::MouseButton;
+
+    #[test]
+    fn merges_moves_but_keeps_order_of_clicks() {
+        let mv = |dx, dy| Message::Input(InputEvent::MouseMoveRel { dx, dy });
+        let click = Message::Input(InputEvent::MouseButton { button: MouseButton::Left, pressed: true });
+        let out = coalesce(vec![mv(1, 2), mv(3, 4), click, mv(5, 6), mv(1, 1)]);
+        assert_eq!(out.len(), 3);
+        assert!(matches!(out[0], Message::Input(InputEvent::MouseMoveRel { dx: 4, dy: 6 })));
+        assert!(matches!(out[1], Message::Input(InputEvent::MouseButton { .. })));
+        assert!(matches!(out[2], Message::Input(InputEvent::MouseMoveRel { dx: 6, dy: 7 })));
+    }
+}
+
 fn find_remote(name: &str) -> io::Result<Remote> {
     store::load_config()
         .remotes
@@ -132,7 +186,7 @@ fn find_remote(name: &str) -> io::Result<Remote> {
 /// Start/stop/query the virtual display on a receiver over a short control session.
 pub fn control_display(name: &str, ident: &Identity, action: DisplayAction) -> io::Result<(bool, String)> {
     let r = find_remote(name)?;
-    let mut conn = net::connect(&r.addr, ident, false, &|_, _| false)?;
+    let mut conn = net::connect(&r.addr, ident, None, &r.name)?;
     conn.send(&Message::DisplayCmd(action))?;
     conn.set_timeouts(Some(Duration::from_secs(45)), Some(Duration::from_secs(5)))?;
     match conn.recv()? {
@@ -141,36 +195,41 @@ pub fn control_display(name: &str, ident: &Identity, action: DisplayAction) -> i
     }
 }
 
-static TUNNELS: Mutex<Option<HashMap<String, u16>>> = Mutex::new(None);
-
-/// Make sure a localhost listener tunnels to this screen's virtual display; returns its port.
+/// Open a ONE-SHOT localhost listener that tunnels to this screen's virtual display; returns its port.
+/// It accepts exactly one connection within 60 seconds and then closes. Nothing else running on this PC
+/// (or any other account on it) gets a second chance to use your remote desktop through it.
 pub fn ensure_tunnel(name: &str, ident: Arc<Identity>) -> io::Result<u16> {
     find_remote(name)?;
-    let mut map = TUNNELS.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "lock"))?;
-    let map = map.get_or_insert_with(HashMap::new);
-    if let Some(p) = map.get(name) {
-        return Ok(*p);
-    }
     let (listener, port) = (5901u16..5931)
         .find_map(|p| TcpListener::bind(("127.0.0.1", p)).ok().map(|l| (l, p)))
         .ok_or_else(|| io::Error::new(io::ErrorKind::AddrInUse, "no free local port for the viewer"))?;
-    map.insert(name.to_string(), port);
+    listener.set_nonblocking(true)?;
     let name = name.to_string();
     std::thread::spawn(move || {
-        for s in listener.incoming() {
-            let Ok(s) = s else { continue };
-            let (name, ident) = (name.clone(), ident.clone());
-            std::thread::spawn(move || {
-                let res = (|| -> io::Result<()> {
-                    let r = find_remote(&name)?;
-                    let mut conn = net::connect(&r.addr, &ident, false, &|_, _| false)?;
-                    conn.send(&Message::OpenDisplay)?;
-                    net::pump(s, conn)
-                })();
-                if let Err(e) = res {
-                    eprintln!("display tunnel: {e}");
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let sock = loop {
+            match listener.accept() {
+                Ok((s, _)) => break Some(s),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() > deadline {
+                        break None;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
                 }
-            });
+                Err(_) => break None,
+            }
+        };
+        drop(listener); // the port is closed from here on
+        let Some(s) = sock else { return };
+        let _ = s.set_nonblocking(false);
+        let res = (|| -> io::Result<()> {
+            let r = find_remote(&name)?;
+            let mut conn = net::connect(&r.addr, &ident, None, &r.name)?;
+            conn.send(&Message::OpenDisplay)?;
+            net::pump(s, conn)
+        })();
+        if let Err(e) = res {
+            eprintln!("display tunnel: {}", shared::clean(&e.to_string()));
         }
     });
     Ok(port)

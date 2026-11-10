@@ -4,8 +4,8 @@
 //! and sent to that receiver. The local cursor is parked at the screen centre and movement
 //! is measured as the offset from that point. Hook callbacks use `try_lock` so they can
 //! never deadlock or stall input; they only touch memory and channels.
-use crate::inject_win;
-use kvm_protocol::{Animation, AnimationStyle, Config, Edge, InputEvent, Message, MouseButton};
+use crate::{fx_win, inject_win};
+use kvm_protocol::{Config, Edge, InputEvent, Message, MouseButton};
 use std::collections::HashMap;
 use std::io;
 use std::sync::mpsc::Sender;
@@ -223,16 +223,6 @@ fn game_blocks(st: &mut State) -> bool {
     v
 }
 
-/// Direction "into" the remote screen from the edge the cursor entered through.
-fn inward(edge: Edge) -> (i32, i32) {
-    match edge {
-        Edge::Right => (1, 0),
-        Edge::Left => (-1, 0),
-        Edge::Top => (0, -1),
-        Edge::Bottom => (0, 1),
-    }
-}
-
 fn enter_remote(st: &mut State, idx: usize, p: POINT) {
     let r = st.cfg.remotes[idx].clone();
     let (l, t, rr, b) = st.bounds;
@@ -256,20 +246,18 @@ fn enter_remote(st: &mut State, idx: usize, p: POINT) {
         });
     }
     let anim = st.cfg.animation;
-    let animate_in = anim.on_enter && anim.style != AnimationStyle::None && anim.duration_ms > 0;
-    let dist = if animate_in { anim.distance_px as i32 } else { 0 };
-    let dir = inward(r.edge);
     st.active = Some(idx);
-    st.vx = (vx + dir.0 * dist).clamp(0, rw - 1);
-    st.vy = (vy + dir.1 * dist).clamp(0, rh - 1);
+    st.vx = vx.clamp(0, rw - 1);
+    st.vy = vy.clamp(0, rh - 1);
     unsafe {
         let _ = SetCursorPos(st.cx, st.cy);
     }
     st.send(Message::Enter { edge: r.edge, pos: frac });
     st.input(InputEvent::MouseMoveRel { dx: snap.0, dy: snap.1 });
     st.input(InputEvent::MouseMoveRel { dx: follow.0, dy: follow.1 });
-    if animate_in {
-        animate_remote(st.senders[idx].clone(), anim, dir);
+    // Purely visual: a colourful effect on screen where you crossed. The mouse is never moved for it.
+    if anim.on_enter {
+        fx_win::play(anim, p.x, p.y, r.edge, st.bounds);
     }
 }
 
@@ -295,7 +283,7 @@ fn leave_remote(st: &mut State) {
         let _ = SetCursorPos(x, y);
     }
     if st.cfg.animation.on_leave {
-        animate_local(x, y, r.edge, st.cfg.animation);
+        fx_win::play(st.cfg.animation, x, y, r.edge, st.bounds);
     }
 }
 
@@ -320,59 +308,6 @@ fn move_remote(st: &mut State, dx: i32, dy: i32) {
         st.vx = st.vx.clamp(0, rw - 1);
         st.vy = st.vy.clamp(0, rh - 1);
     }
-}
-
-// ---- animations ---------------------------------------------------------------
-
-/// The cursor "drops" away from the edge it re-entered on, with the chosen easing.
-fn animate_local(x: i32, y: i32, edge: Edge, a: Animation) {
-    if a.style == AnimationStyle::None || a.duration_ms == 0 {
-        return;
-    }
-    std::thread::spawn(move || {
-        let start = Instant::now();
-        loop {
-            let t = (start.elapsed().as_millis() as f32 / a.duration_ms as f32).min(1.0);
-            let d = (a.distance_px as f32 * kvm_protocol::ease(&a, t)) as i32;
-            let (px, py) = match edge {
-                Edge::Right => (x - d, y),
-                Edge::Left => (x + d, y),
-                Edge::Top => (x, y + d),
-                Edge::Bottom => (x, y - d),
-            };
-            unsafe {
-                let _ = SetCursorPos(px, py);
-            }
-            if t >= 1.0 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(8));
-        }
-    });
-}
-
-/// Same easing on the remote screen: the cursor is nudged in from the edge it arrived on.
-fn animate_remote(tx: Sender<Message>, a: Animation, dir: (i32, i32)) {
-    std::thread::spawn(move || {
-        let start = Instant::now();
-        let mut prev = 0i32;
-        loop {
-            let t = (start.elapsed().as_millis() as f32 / a.duration_ms as f32).min(1.0);
-            let d = (a.distance_px as f32 * kvm_protocol::ease(&a, t)).round() as i32;
-            let step = d - prev;
-            prev = d;
-            if step != 0 {
-                let ev = InputEvent::MouseMoveRel { dx: dir.0 * step, dy: dir.1 * step };
-                if tx.send(Message::Input(ev)).is_err() {
-                    break;
-                }
-            }
-            if t >= 1.0 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(8));
-        }
-    });
 }
 
 // ---- hooks ------------------------------------------------------------------

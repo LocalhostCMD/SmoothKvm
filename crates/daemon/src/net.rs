@@ -5,76 +5,49 @@ use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-pub fn ask_yes_no(prompt: &str) -> bool {
-    print!("{prompt} [y/N] ");
-    let _ = io::stdout().flush();
-    let mut line = String::new();
-    let ok = io::stdin().read_line(&mut line).is_ok()
-        && matches!(line.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}'), "y" | "Y" | "yes");
-    println!("{}", if ok { "-> confirmed" } else { "-> not confirmed" });
-    ok
-}
-
-/// Terminal confirmation of a pairing code.
-pub fn cli_confirm(name: &str, sas: &str) -> bool {
-    println!("\nPAIRING with {name}\n  security code: {sas}\n  The other device must show exactly the same code.");
-    ask_yes_no("Do the codes match?")
-}
 
 /// Decide whether to talk to this peer. Returns Ok(true) if it was newly paired.
-/// `confirm(name, code)` asks a human whether the codes match.
-pub fn authorize(
-    conn: &mut SecureConn,
-    remote: &[u8],
-    sas: &str,
-    pairing: bool,
-    name: &str,
-    confirm: &dyn Fn(&str, &str) -> bool,
-) -> io::Result<bool> {
+///
+/// * `pin_paired`: both sides just proved knowledge of the single-use pairing PIN inside the handshake,
+///   so the peer's key is saved as trusted (on both devices).
+/// * otherwise the peer's key must already be trusted.
+pub fn authorize(conn: &mut SecureConn, remote: &[u8], pin_paired: bool, name: &str) -> io::Result<bool> {
     let mut peers = Peers::load();
-    let mine = if peers.is_trusted(remote) {
-        b'T'
-    } else if pairing {
-        b'U'
-    } else {
-        b'R'
-    };
+    if pin_paired {
+        peers.add(name, remote);
+        peers.save()?;
+        // make sure the other side saved us too before we go on
+        conn.send_raw(b"P")?;
+        if conn.recv_raw()? != b"P" {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "pairing was not completed on the other device"));
+        }
+        println!("Paired with {name}.");
+        return Ok(true);
+    }
+    let mine = if peers.is_trusted(remote) { b'T' } else { b'R' };
     conn.send_raw(&[mine])?;
     let theirs = conn.recv_raw()?.first().copied().unwrap_or(b'R');
-    match (mine, theirs) {
-        (b'T', b'T') => Ok(false),
-        (b'U', b'U') => {
-            let ok = confirm(name, sas);
-            if conn.confirm_pairing(ok)? {
-                peers.add(name, remote);
-                peers.save()?;
-                println!("Paired with {name}.");
-                Ok(true)
-            } else {
-                Err(io::Error::new(io::ErrorKind::PermissionDenied, "pairing was not confirmed on both sides"))
-            }
-        }
-        _ => Err(io::Error::new(
+    if mine == b'T' && theirs == b'T' {
+        Ok(false)
+    } else {
+        Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "not paired: pair the devices first (start the receiver with --pair, then press Pair)",
-        )),
+            "not paired: pair the devices first (open pairing on the screen, then pair with its PIN)",
+        ))
     }
 }
 
-pub fn connect(
-    addr: &str,
-    ident: &Identity,
-    pairing: bool,
-    confirm: &dyn Fn(&str, &str) -> bool,
-) -> io::Result<SecureConn> {
+/// Connect to a receiver. `pin = Some(..)` pairs with it (the PIN is shown on the receiver).
+pub fn connect(addr: &str, ident: &Identity, pin: Option<&str>, name: &str) -> io::Result<SecureConn> {
     let sock = addr
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cannot resolve address"))?;
     let stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
-    let est = secure::connect(stream, &ident.private)?;
+    let est = secure::connect(stream, &ident.private, pin)?;
     let mut conn = est.conn;
-    authorize(&mut conn, &est.remote_key, &est.sas, pairing, &sock.ip().to_string(), confirm)?;
+    let label = if name.is_empty() { sock.ip().to_string() } else { name.to_string() };
+    authorize(&mut conn, &est.remote_key, est.pin_paired, &label)?;
     conn.set_timeouts(None, Some(Duration::from_secs(5)))?;
     Ok(conn)
 }

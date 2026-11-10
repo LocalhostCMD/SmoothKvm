@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/protocol", "crates/daemon", "crates/launcher"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 
 [workspace.dependencies]
@@ -14,3 +14,9 @@ snow = "0.9"
 serde_json = "1"
 getrandom = "0.2"
 tiny_http = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

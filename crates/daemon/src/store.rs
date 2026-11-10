@@ -18,17 +18,40 @@ pub fn config_dir() -> PathBuf {
 
 /// Write a file that only the current user may read (secrets).
 fn write_private(path: &PathBuf, contents: &str) -> io::Result<()> {
-    fs::create_dir_all(path.parent().unwrap_or(&PathBuf::from(".")))?;
+    let dir = path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    fs::create_dir_all(&dir)?;
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         opts.mode(0o600);
+        // the folder holding the secrets is private to this user too
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     }
     let mut f = opts.open(path)?;
+    // a file that already existed keeps its old mode, so force it
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
     f.write_all(contents.as_bytes())
 }
+
+/// Secrets must never be readable by other accounts: tighten them if something (a backup, a copy,
+/// a loose umask) widened the permissions.
+#[cfg(unix)]
+fn harden(path: &PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(m) = fs::metadata(path) {
+        if m.permissions().mode() & 0o077 != 0 {
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+#[cfg(not(unix))]
+fn harden(_path: &PathBuf) {}
 
 pub struct Identity {
     pub private: Vec<u8>,
@@ -38,6 +61,7 @@ pub struct Identity {
 impl Identity {
     pub fn load_or_create() -> io::Result<Self> {
         let path = config_dir().join("identity.key");
+        harden(&path);
         if let Ok(text) = fs::read_to_string(&path) {
             let mut lines = text.lines();
             if let (Some(a), Some(b)) = (lines.next(), lines.next()) {
@@ -120,6 +144,7 @@ pub fn save_config(cfg: &Config) -> io::Result<()> {
 #[allow(dead_code)]
 pub fn panel_token() -> io::Result<String> {
     let path = config_dir().join("panel.token");
+    harden(&path);
     if let Ok(t) = fs::read_to_string(&path) {
         if t.trim().len() == 64 {
             return Ok(t.trim().to_string());

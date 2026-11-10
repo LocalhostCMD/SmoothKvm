@@ -30,7 +30,12 @@ fn read_pids() -> Vec<(String, i32)> {
         .lines()
         .filter_map(|l| {
             let (n, p) = l.split_once(' ')?;
-            Some((n.to_string(), p.parse().ok()?))
+            let pid: i32 = p.parse().ok()?;
+            // pid 0/1/negative would make kill(-pid) hit far more than our own processes
+            if pid <= 1 {
+                return None;
+            }
+            Some((n.to_string(), pid))
         })
         .collect()
 }

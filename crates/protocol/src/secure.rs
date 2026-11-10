@@ -1,11 +1,15 @@
 //! Encrypted, mutually authenticated transport.
 //!
-//! Noise_XX_25519_ChaChaPoly_BLAKE2s: both sides prove possession of a static
-//! X25519 key, all traffic is encrypted + authenticated (ChaCha20-Poly1305),
-//! sessions have forward secrecy, and nonces are strict counters so replayed,
-//! dropped or reordered frames fail authentication.
-//! Which keys are *trusted* is decided by the caller (pairing / pinned keys).
+//! Normal connections: Noise_XX_25519_ChaChaPoly_BLAKE2s (both sides prove possession of a static
+//! X25519 key; ChaCha20-Poly1305; forward secrecy; strict nonce counters so replayed, dropped or
+//! reordered frames fail authentication). Which keys are *trusted* is decided by the caller.
+//!
+//! Pairing connections: Noise_XXpsk3, where the PSK is derived from a single-use PIN shown on the
+//! receiving device. Anyone who doesn't know the PIN cannot complete the handshake with either
+//! side, so a man-in-the-middle can't slip in (this replaces comparing a short code by eye, which
+//! an attacker can defeat by grinding keys until the short codes collide).
 use crate::Message;
+use blake2::{Blake2s256, Digest};
 use snow::{Builder, StatelessTransportState};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
@@ -13,9 +17,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const PARAMS_PSK: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
+/// Unauthenticated peers get very little time: this is the main handle for slow-connection abuse.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Largest plaintext that fits in one Noise frame (65535 - 16 byte tag).
 pub const MAX_PLAINTEXT: usize = 65519;
+
+const MODE_NORMAL: u8 = 0x01;
+const MODE_PAIRING: u8 = 0x02;
 
 fn err<E: std::fmt::Display>(e: E) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.to_string())
@@ -36,6 +45,34 @@ pub fn from_hex(s: &str) -> Option<Vec<u8>> {
         return None;
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+}
+
+/// Stretch a short PIN into a 32-byte pre-shared key. The stretching only makes offline guessing
+/// slower; the real protection is that a PIN is single-use and burned after any failed attempt.
+pub fn pin_to_psk(pin: &str) -> [u8; 32] {
+    let mut h = Blake2s256::new();
+    h.update(b"SmoothKvm pairing v1");
+    h.update(pin.as_bytes());
+    let mut key: [u8; 32] = h.finalize().into();
+    for _ in 0..200_000 {
+        let mut h = Blake2s256::new();
+        h.update(key);
+        h.update(pin.as_bytes());
+        key = h.finalize().into();
+    }
+    key
+}
+
+/// Constant-time equality for secrets (tokens, MACs, PINs).
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn write_frame(s: &mut TcpStream, data: &[u8]) -> io::Result<()> {
@@ -84,15 +121,16 @@ pub struct Established {
     pub conn: SecureConn,
     /// The peer's static public key (authenticated by the handshake).
     pub remote_key: Vec<u8>,
-    /// Short code both sides can show to a human to rule out a man-in-the-middle.
-    pub sas: String,
+    /// True when both sides proved knowledge of the pairing PIN (so the keys may be trusted).
+    pub pin_paired: bool,
 }
 
-fn handshake(mut stream: TcpStream, private: &[u8], initiator: bool) -> io::Result<Established> {
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
-    stream.set_nodelay(true)?;
-    let builder = Builder::new(PARAMS.parse().map_err(err)?).local_private_key(private);
+fn handshake(mut stream: TcpStream, private: &[u8], initiator: bool, psk: Option<[u8; 32]>) -> io::Result<Established> {
+    let params = if psk.is_some() { PARAMS_PSK } else { PARAMS };
+    let mut builder = Builder::new(params.parse().map_err(err)?).local_private_key(private);
+    if let Some(k) = psk.as_ref() {
+        builder = builder.psk(3, k);
+    }
     let built = if initiator { builder.build_initiator() } else { builder.build_responder() };
     let mut hs = built.map_err(err)?;
     let mut buf = vec![0u8; 65535];
@@ -106,23 +144,41 @@ fn handshake(mut stream: TcpStream, private: &[u8], initiator: bool) -> io::Resu
         }
     }
     let remote_key = hs.get_remote_static().ok_or_else(|| err("no remote key"))?.to_vec();
-    let hash = hs.get_handshake_hash().to_vec();
     let ts = hs.into_stateless_transport_mode().map_err(err)?;
-    let n = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) % 1_000_000;
-    let sas = format!("{:03} {:03}", n / 1000, n % 1000);
     Ok(Established {
         conn: SecureConn { stream, ts: Arc::new(ts), send_n: 0, recv_n: 0, buf },
         remote_key,
-        sas,
+        pin_paired: psk.is_some(),
     })
 }
 
-pub fn connect(stream: TcpStream, private: &[u8]) -> io::Result<Established> {
-    handshake(stream, private, true)
+/// Connect side. `pin = Some(..)` starts a pairing handshake, otherwise a normal one.
+pub fn connect(mut stream: TcpStream, private: &[u8], pin: Option<&str>) -> io::Result<Established> {
+    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    stream.set_nodelay(true)?;
+    stream.write_all(&[if pin.is_some() { MODE_PAIRING } else { MODE_NORMAL }])?;
+    handshake(stream, private, true, pin.map(pin_to_psk))
 }
 
-pub fn accept(stream: TcpStream, private: &[u8]) -> io::Result<Established> {
-    handshake(stream, private, false)
+/// Accept side. `open_pin` is the currently valid pairing PIN, or None when pairing is closed (in
+/// which case pairing handshakes are refused before any key exchange).
+pub fn accept(mut stream: TcpStream, private: &[u8], open_pin: Option<&str>) -> io::Result<Established> {
+    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    stream.set_nodelay(true)?;
+    let mut mode = [0u8; 1];
+    stream.read_exact(&mut mode)?;
+    match mode[0] {
+        MODE_NORMAL => handshake(stream, private, false, None),
+        MODE_PAIRING => match open_pin {
+            // Any failure here means the caller did not know the PIN; PermissionDenied tells the receiver to burn it.
+            Some(pin) => handshake(stream, private, false, Some(pin_to_psk(pin)))
+                .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, format!("pairing failed: {e}"))),
+            None => Err(io::Error::new(io::ErrorKind::PermissionDenied, "pairing is closed")),
+        },
+        _ => Err(err("unknown connection mode")),
+    }
 }
 
 impl SecureConn {
@@ -142,13 +198,6 @@ impl SecureConn {
     pub fn recv(&mut self) -> io::Result<Message> {
         let body = self.recv_raw()?;
         bincode::deserialize(&body).map_err(err)
-    }
-
-    /// Both sides send their verdict; pairing succeeds only if both said yes.
-    pub fn confirm_pairing(&mut self, local_ok: bool) -> io::Result<bool> {
-        self.send_raw(if local_ok { b"Y" } else { b"N" })?;
-        let theirs = self.recv_raw()?;
-        Ok(local_ok && theirs == b"Y")
     }
 
     pub fn set_timeouts(&self, read: Option<Duration>, write: Option<Duration>) -> io::Result<()> {
@@ -205,47 +254,118 @@ mod tests {
     use crate::InputEvent;
     use std::net::TcpListener;
 
+    fn pair() -> (TcpStream, TcpListener) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        (TcpStream::connect(l.local_addr().unwrap()).unwrap(), l)
+    }
+
     #[test]
-    fn encrypted_roundtrip_and_matching_sas() {
+    fn encrypted_roundtrip_and_key_authentication() {
         let (a_priv, a_pub) = generate_keypair().unwrap();
         let (b_priv, b_pub) = generate_keypair().unwrap();
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap();
+        let (c, l) = pair();
         let t = std::thread::spawn(move || {
             let (s, _) = l.accept().unwrap();
-            let mut e = accept(s, &b_priv).unwrap();
+            let mut e = accept(s, &b_priv, None).unwrap();
             let m = e.conn.recv().unwrap();
-            (e.remote_key, e.sas, matches!(m, Message::Input(InputEvent::Key { code: 4, pressed: true })))
+            (e.remote_key, e.pin_paired, matches!(m, Message::Input(InputEvent::Key { code: 4, pressed: true })))
         });
-        let mut e = connect(TcpStream::connect(addr).unwrap(), &a_priv).unwrap();
+        let mut e = connect(c, &a_priv, None).unwrap();
         e.conn.send(&Message::Input(InputEvent::Key { code: 4, pressed: true })).unwrap();
-        let (seen_key, sas_b, got) = t.join().unwrap();
-        assert!(got);
+        let (seen_key, paired, got) = t.join().unwrap();
+        assert!(got && !paired);
         assert_eq!(seen_key, a_pub);
         assert_eq!(e.remote_key, b_pub);
-        assert_eq!(e.sas, sas_b);
+    }
+
+    #[test]
+    fn pairing_with_the_right_pin_works() {
+        let (a_priv, a_pub) = generate_keypair().unwrap();
+        let (b_priv, b_pub) = generate_keypair().unwrap();
+        let (c, l) = pair();
+        let t = std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let e = accept(s, &b_priv, Some("12345678")).unwrap();
+            (e.remote_key, e.pin_paired)
+        });
+        let e = connect(c, &a_priv, Some("12345678")).unwrap();
+        let (seen, paired) = t.join().unwrap();
+        assert!(paired && e.pin_paired);
+        assert_eq!(seen, a_pub);
+        assert_eq!(e.remote_key, b_pub);
+    }
+
+    #[test]
+    fn wrong_pin_cannot_pair() {
+        let (a_priv, _) = generate_keypair().unwrap();
+        let (b_priv, _) = generate_keypair().unwrap();
+        let (c, l) = pair();
+        let t = std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            accept(s, &b_priv, Some("12345678")).is_err()
+        });
+        // the attacker guessed wrong; the receiver must reject it (the client side may or may not notice yet)
+        let _ = connect(c, &a_priv, Some("00000000")).and_then(|mut e| e.conn.send(&Message::Ping));
+        assert!(t.join().unwrap(), "receiver accepted a wrong PIN");
+    }
+
+    #[test]
+    fn pairing_is_refused_when_closed() {
+        let (a_priv, _) = generate_keypair().unwrap();
+        let (b_priv, _) = generate_keypair().unwrap();
+        let (c, l) = pair();
+        let t = std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            accept(s, &b_priv, None).is_err()
+        });
+        let _ = connect(c, &a_priv, Some("12345678"));
+        assert!(t.join().unwrap());
     }
 
     #[test]
     fn split_halves_work_both_ways() {
         let (a_priv, _) = generate_keypair().unwrap();
         let (b_priv, _) = generate_keypair().unwrap();
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap();
+        let (c, l) = pair();
         let t = std::thread::spawn(move || {
             let (s, _) = l.accept().unwrap();
-            let e = accept(s, &b_priv).unwrap();
+            let e = accept(s, &b_priv, None).unwrap();
             let (mut r, mut w) = e.conn.split().unwrap();
             let got = r.recv_raw().unwrap();
-            w.send_raw(&got).unwrap(); // echo
+            w.send_raw(&got).unwrap();
             w.send_raw(b"second").unwrap();
         });
-        let e = connect(TcpStream::connect(addr).unwrap(), &a_priv).unwrap();
+        let e = connect(c, &a_priv, None).unwrap();
         let (mut r, mut w) = e.conn.split().unwrap();
         w.send_raw(b"hello").unwrap();
         assert_eq!(r.recv_raw().unwrap(), b"hello");
         assert_eq!(r.recv_raw().unwrap(), b"second");
         t.join().unwrap();
+    }
+
+    #[test]
+    fn tampered_frame_is_rejected() {
+        let (a_priv, _) = generate_keypair().unwrap();
+        let (b_priv, _) = generate_keypair().unwrap();
+        let (c, l) = pair();
+        let t = std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let mut e = accept(s, &b_priv, None).unwrap();
+            e.conn.recv_raw().is_err()
+        });
+        let e = connect(c, &a_priv, None).unwrap();
+        // write a garbage but well-framed message straight onto the socket
+        let mut raw = e.conn;
+        raw.stream.write_all(&[0, 20]).unwrap();
+        raw.stream.write_all(&[7u8; 20]).unwrap();
+        assert!(t.join().unwrap(), "forged frame was accepted");
+    }
+
+    #[test]
+    fn constant_time_compare() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"ab"));
     }
 
     #[test]
