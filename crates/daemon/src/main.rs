@@ -13,6 +13,10 @@
 //   SmoothKvm test <addr> [--pair]     send a small mouse-square
 //
 // All traffic is encrypted and mutually authenticated (see kvm_protocol::secure).
+// A GUI-subsystem app on Windows: double-clicking opens the window with no console flash.
+// When started from a terminal we attach to it so command output still shows up there.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use kvm_protocol::secure;
 use kvm_protocol::{DisplayAction, InputEvent, Message, MouseButton};
 use std::collections::HashSet;
@@ -34,6 +38,8 @@ mod app;
 mod capture_win;
 #[cfg(windows)]
 mod daemon;
+#[cfg(windows)]
+mod gui;
 #[cfg(windows)]
 mod inject_win;
 #[cfg(target_os = "linux")]
@@ -136,7 +142,7 @@ fn handle_session(stream: TcpStream, ident: &Identity, pairing: bool) -> io::Res
                 held.track(&ev);
                 inject(&ev);
             }
-            Ok(Message::Leave) => held.release_all(),
+            Ok(Message::Leave) | Ok(Message::ReleaseAll) => held.release_all(),
             Ok(_) => {}
             Err(e) => break e,
         }
@@ -227,7 +233,33 @@ fn usage() {
     );
 }
 
+#[cfg(windows)]
+fn attach_console() {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Console::*;
+    unsafe {
+        let missing = |id| GetStdHandle(id).map(|h| h.is_invalid() || h.0.is_null()).unwrap_or(true);
+        if !(missing(STD_OUTPUT_HANDLE) || missing(STD_ERROR_HANDLE) || missing(STD_INPUT_HANDLE)) {
+            return; // output/input already redirected (e.g. the background app's log file)
+        }
+        if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
+            return; // started from Explorer: no console, nothing to print to
+        }
+        for (id, name, write) in [(STD_OUTPUT_HANDLE, "CONOUT$", true), (STD_ERROR_HANDLE, "CONOUT$", true), (STD_INPUT_HANDLE, "CONIN$", false)] {
+            if missing(id) {
+                if let Ok(f) = std::fs::OpenOptions::new().read(!write).write(write).open(name) {
+                    let _ = SetStdHandle(id, HANDLE(f.as_raw_handle() as _));
+                    std::mem::forget(f);
+                }
+            }
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
+    #[cfg(windows)]
+    attach_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
     let pos: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
@@ -236,9 +268,9 @@ fn main() -> io::Result<()> {
         #[cfg(windows)]
         None | Some("panel") | Some("open") => app::open_panel(),
         #[cfg(windows)]
-        Some("daemon") => daemon::run(),
+        Some("daemon") => gui::run(flag("--show")),
         #[cfg(windows)]
-        Some("start") => app::start().map(|started| println!("{}", if started { "SmoothKvm started." } else { "SmoothKvm is already running." })),
+        Some("start") => app::start(false).map(|started| println!("{}", if started { "SmoothKvm started." } else { "SmoothKvm is already running." })),
         #[cfg(windows)]
         Some("stop") => app::stop(),
         #[cfg(windows)]

@@ -32,6 +32,10 @@ struct State {
     held: Vec<(u16, bool)>,
     buttons_down: u32,
     guard_cache: (Option<Instant>, bool),
+    /// Emergency stop is active: no screen switching until resumed.
+    paused: bool,
+    esc_presses: Vec<Instant>,
+    esc_held: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -106,6 +110,52 @@ fn screen_state(cfg: Config) -> State {
             held: Vec::new(),
             buttons_down: 0,
             guard_cache: (None, false),
+            paused: false,
+            esc_presses: Vec::new(),
+            esc_held: false,
+        }
+    }
+}
+
+/// Emergency stop: back to this PC, tell every screen to release held inputs, release ours,
+/// and stop switching until resumed.
+fn do_emergency(st: &mut State) {
+    if st.active.is_some() {
+        leave_remote(st);
+    }
+    st.paused = true;
+    for tx in &st.senders {
+        let _ = tx.send(Message::ReleaseAll);
+    }
+    st.held.clear();
+    std::thread::spawn(|| {
+        for (scan, ext) in [(0x1D, false), (0x1D, true), (0x2A, false), (0x36, false), (0x38, false), (0x38, true), (0x5B, true), (0x5C, true)] {
+            inject_win::key(scan, ext, false);
+        }
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            inject_win::inject(&InputEvent::MouseButton { button, pressed: false });
+        }
+    });
+}
+
+pub fn is_paused() -> bool {
+    STATE.lock().ok().and_then(|g| g.as_ref().map(|s| s.paused)).unwrap_or(false)
+}
+
+impl Controller {
+    pub fn emergency_stop(&self) {
+        if let Ok(mut g) = STATE.lock() {
+            if let Some(st) = g.as_mut() {
+                do_emergency(st);
+            }
+        }
+    }
+
+    pub fn resume(&self) {
+        if let Ok(mut g) = STATE.lock() {
+            if let Some(st) = g.as_mut() {
+                st.paused = false;
+            }
         }
     }
 }
@@ -148,6 +198,9 @@ fn edge_hit(b: (i32, i32, i32, i32), edge: Edge, p: POINT) -> bool {
 
 /// Which connected remote (if any) sits on the edge the cursor just touched.
 fn find_target(st: &State, p: POINT) -> Option<usize> {
+    if st.paused {
+        return None;
+    }
     st.cfg
         .remotes
         .iter()
@@ -271,37 +324,6 @@ fn move_remote(st: &mut State, dx: i32, dy: i32) {
 
 // ---- animations ---------------------------------------------------------------
 
-fn ease(style: AnimationStyle, t: f32) -> f32 {
-    match style {
-        AnimationStyle::None => 1.0,
-        AnimationStyle::Slide => 1.0 - (1.0 - t).powi(3),
-        AnimationStyle::Elastic => {
-            if t <= 0.0 {
-                0.0
-            } else if t >= 1.0 {
-                1.0
-            } else {
-                2f32.powf(-10.0 * t) * ((t * 10.0 - 0.75) * (2.0 * std::f32::consts::PI / 3.0)).sin() + 1.0
-            }
-        }
-        AnimationStyle::Bounce => {
-            let (n1, d1) = (7.5625, 2.75);
-            if t < 1.0 / d1 {
-                n1 * t * t
-            } else if t < 2.0 / d1 {
-                let t = t - 1.5 / d1;
-                n1 * t * t + 0.75
-            } else if t < 2.5 / d1 {
-                let t = t - 2.25 / d1;
-                n1 * t * t + 0.9375
-            } else {
-                let t = t - 2.625 / d1;
-                n1 * t * t + 0.984375
-            }
-        }
-    }
-}
-
 /// The cursor "drops" away from the edge it re-entered on, with the chosen easing.
 fn animate_local(x: i32, y: i32, edge: Edge, a: Animation) {
     if a.style == AnimationStyle::None || a.duration_ms == 0 {
@@ -311,7 +333,7 @@ fn animate_local(x: i32, y: i32, edge: Edge, a: Animation) {
         let start = Instant::now();
         loop {
             let t = (start.elapsed().as_millis() as f32 / a.duration_ms as f32).min(1.0);
-            let d = (a.distance_px as f32 * ease(a.style, t)) as i32;
+            let d = (a.distance_px as f32 * kvm_protocol::ease(&a, t)) as i32;
             let (px, py) = match edge {
                 Edge::Right => (x - d, y),
                 Edge::Left => (x + d, y),
@@ -336,7 +358,7 @@ fn animate_remote(tx: Sender<Message>, a: Animation, dir: (i32, i32)) {
         let mut prev = 0i32;
         loop {
             let t = (start.elapsed().as_millis() as f32 / a.duration_ms as f32).min(1.0);
-            let d = (a.distance_px as f32 * ease(a.style, t)).round() as i32;
+            let d = (a.distance_px as f32 * kvm_protocol::ease(&a, t)).round() as i32;
             let step = d - prev;
             prev = d;
             if step != 0 {
@@ -474,14 +496,28 @@ fn handle_key(msg: u32, info: &KBDLLHOOKSTRUCT) -> bool {
     let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     let ext = info.flags.0 & 0x01 != 0;
     let scan = info.scanCode as u16;
-    if st.active.is_some() {
-        if let Some(hid) = scan_to_hid(scan, ext) {
-            if hid == st.cfg.escape_hid {
-                if down {
-                    leave_remote(st);
-                }
-                return true;
+    let hid = scan_to_hid(scan, ext);
+    // The escape key (Scroll Lock by default) is reserved for SmoothKvm: once = come back to this PC,
+    // three quick presses = emergency stop. Holding it down (auto-repeat) counts as one press.
+    if hid == Some(st.cfg.escape_hid) {
+        if !down {
+            st.esc_held = false;
+        } else if !st.esc_held {
+            st.esc_held = true;
+            let now = Instant::now();
+            st.esc_presses.retain(|t| now.duration_since(*t) < Duration::from_millis(1500));
+            st.esc_presses.push(now);
+            if st.esc_presses.len() >= 3 {
+                st.esc_presses.clear();
+                do_emergency(st);
+            } else if st.active.is_some() {
+                leave_remote(st);
             }
+        }
+        return true;
+    }
+    if st.active.is_some() {
+        if let Some(hid) = hid {
             st.input(InputEvent::Key { code: hid, pressed: down });
         }
         return true;

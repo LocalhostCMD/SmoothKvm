@@ -19,7 +19,13 @@ the same code. Everything else (animations, game mode, displays) is in the panel
 
 ## Features
 - **Several screens**: up to four, one per side of your PC. Each has its own name, address, size.
-- **Animations**: Bounce / Elastic / Slide / None, duration and distance, on arrival and/or return.
+- **Native app**: its own window (no browser) plus a tray icon. Closing the window keeps it running in the
+  tray and frees the window's memory. Double-click it or type `SmoothKvm`.
+- **Emergency stop**: red button in the app, tray menu item, or press the escape key (Scroll Lock) **three
+  times quickly**. Returns control to this PC, makes every screen release held keys/buttons, releases
+  modifiers/buttons here, and pauses switching until you press Resume.
+- **Effects**: Bounce / Elastic / Slide / Overshoot / Spring / **Custom bezier curve** (with live plot and
+  presets), duration and distance, on arrival and/or return, applied on both your PC and the remote screen.
 - **Game mode**: while a full-screen app or game is running (Windows' own detection) the cursor
   will not switch screens. Toggle in the panel; the header shows when it is active.
 - **On-demand display** for headless machines (Xvfb + XFCE + x11vnc), started/stopped from the panel

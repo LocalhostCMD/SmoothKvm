@@ -46,11 +46,19 @@ button.danger{background:transparent;color:var(--bad)}
 #modal{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;padding:16px}
 #modal .box{background:var(--card);border-radius:14px;padding:22px;max-width:420px;width:100%;text-align:center}
 #code{font:600 34px ui-monospace,Consolas,monospace;letter-spacing:3px;margin:14px 0}
+button.stop{background:var(--bad);font-weight:600}
+#pausedbar{display:none;background:#c0362c22;border:1px solid var(--bad);color:var(--bad);padding:10px 14px;border-radius:10px;margin-bottom:14px}
+#pausedbar button{margin-left:10px}
+.row4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+#curve{width:100%;max-width:300px;height:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;margin-top:10px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.chips button{padding:4px 10px;font-size:13px}
 </style>
 </head>
 <body>
 <main>
-<header><h1>SmoothKvm</h1><span class="badge" id="game">Game mode: off</span></header>
+<header><h1>SmoothKvm</h1><div style="display:flex;gap:10px;align-items:center"><span class="badge" id="game">Game mode: off</span><button class="stop" id="estop">Emergency stop</button></div></header>
+<div id="pausedbar"><b>Stopped.</b> Screen switching is paused and every held key and mouse button was released. <button class="ghost" id="resume">Resume</button></div>
 <p class="sub">One keyboard and mouse across all your screens. Everything between your computers is encrypted, and only paired devices are accepted.</p>
 
 <div class="card">
@@ -63,10 +71,16 @@ button.danger{background:transparent;color:var(--bad)}
 <div class="card">
   <h2>Animation</h2>
   <div class="row3">
-    <div><label>Style</label><select id="astyle"><option>None</option><option>Bounce</option><option>Elastic</option><option>Slide</option></select></div>
+    <div><label>Effect</label><select id="astyle"><option>None</option><option>Bounce</option><option>Elastic</option><option>Slide</option><option>Overshoot</option><option>Spring</option><option>Custom</option></select></div>
     <div><label>Duration (ms)</label><input id="adur" type="number" min="0" max="2000" step="50"></div>
     <div><label>Distance (px)</label><input id="adist" type="number" min="8" max="300" step="4"></div>
   </div>
+  <div id="customrow" style="display:none">
+    <label>Your own curve: cubic-bezier x1, y1, x2, y2 (x between 0 and 1; y can go below 0 or above 1 to overshoot)</label>
+    <div class="row4"><input id="c0" type="number" step="0.01" min="0" max="1"><input id="c1" type="number" step="0.01" min="-2" max="3"><input id="c2" type="number" step="0.01" min="0" max="1"><input id="c3" type="number" step="0.01" min="-2" max="3"></div>
+    <div class="chips"><span class="pill">Start from:</span><button class="ghost" data-c="0.2,0.9,0.2,1">Snappy</button><button class="ghost" data-c="0.25,0.1,0.25,1">Gentle</button><button class="ghost" data-c="0.34,1.56,0.64,1">Punchy</button><button class="ghost" data-c="0.68,-0.6,0.32,1.6">Whip</button></div>
+  </div>
+  <svg id="curve" viewBox="0 0 120 80"></svg>
   <label class="check"><input id="aenter" type="checkbox"> Animate when the cursor arrives on another screen</label>
   <label class="check"><input id="aleave" type="checkbox"> Animate when the cursor comes back to this PC</label>
   <div id="track"><div id="ball"></div></div>
@@ -198,21 +212,43 @@ function renderStatusLine(){
 }
 
 // ---- animation
-function ease(s,t){
-  if(s==='Slide') return 1-Math.pow(1-t,3);
-  if(s==='Elastic') return t<=0?0:t>=1?1:Math.pow(2,-10*t)*Math.sin((t*10-0.75)*(2*Math.PI/3))+1;
-  if(s==='Bounce'){ const n=7.5625,d=2.75; if(t<1/d) return n*t*t; if(t<2/d){t-=1.5/d;return n*t*t+.75} if(t<2.5/d){t-=2.25/d;return n*t*t+.9375} t-=2.625/d; return n*t*t+.984375; }
+function bez(c,t){
+  const x=s=>3*(1-s)*(1-s)*s*c[0]+3*(1-s)*s*s*c[2]+s*s*s, y=s=>3*(1-s)*(1-s)*s*c[1]+3*(1-s)*s*s*c[3]+s*s*s;
+  let lo=0,hi=1; for(let i=0;i<24;i++){ const m=(lo+hi)/2; if(x(m)<t) lo=m; else hi=m; } return y((lo+hi)/2);
+}
+// Same formulas as the app (kvm_protocol::ease).
+function ease(a,t){
+  t=Math.min(Math.max(t,0),1); if(t<=0) return 0; if(t>=1) return 1;
+  switch(a.style){
+    case 'None': return 1;
+    case 'Slide': return 1-Math.pow(1-t,3);
+    case 'Overshoot': { const c1=1.70158,c3=2.70158; return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2); }
+    case 'Spring': return 1-Math.exp(-7*t)*Math.cos(12*t);
+    case 'Custom': return bez(a.curve,t);
+    case 'Elastic': return Math.pow(2,-10*t)*Math.sin((t*10-0.75)*(2*Math.PI/3))+1;
+    case 'Bounce': { const n=7.5625,d=2.75; if(t<1/d) return n*t*t; if(t<2/d){t-=1.5/d;return n*t*t+.75} if(t<2.5/d){t-=2.25/d;return n*t*t+.9375} t-=2.625/d; return n*t*t+.984375; }
+  }
   return 1;
+}
+function drawCurve(){
+  const a=cfg.animation; let d='';
+  for(let i=0;i<=60;i++){ const t=i/60, v=a.style==='None'?t:ease(a,t); d+=(i?'L':'M')+(10+t*100).toFixed(1)+' '+(65-v*45).toFixed(1)+' '; }
+  $('curve').innerHTML='<line x1="10" y1="65" x2="110" y2="65" stroke="currentColor" opacity=".25"/><line x1="10" y1="20" x2="110" y2="20" stroke="currentColor" opacity=".25" stroke-dasharray="3 3"/><path d="'+d+'" fill="none" stroke="var(--acc)" stroke-width="2"/>';
 }
 function preview(){
   const ball=$('ball'), a=cfg.animation, max=Math.min($('track').clientWidth-24, a.distance_px*2.2), t0=performance.now();
-  (function f(now){ const t=Math.min((now-t0)/Math.max(a.duration_ms,1),1); ball.style.left=(4+max*(a.style==='None'?1:ease(a.style,t)))+'px'; if(t<1) requestAnimationFrame(f); })(t0);
+  (function f(now){ const t=Math.min((now-t0)/Math.max(a.duration_ms,1),1); ball.style.left=(4+max*ease(a,t))+'px'; if(t<1) requestAnimationFrame(f); })(t0);
 }
 function bindSimple(){
   const A=()=>cfg.animation;
-  $('astyle').onchange=e=>{ A().style=e.target.value; touch(); preview(); };
+  const upd=()=>{ $('customrow').style.display = A().style==='Custom' ? 'block' : 'none'; drawCurve(); };
+  $('astyle').onchange=e=>{ A().style=e.target.value; upd(); touch(); preview(); };
   $('adur').oninput=e=>{ A().duration_ms=+e.target.value; touch(); };
   $('adist').oninput=e=>{ A().distance_px=+e.target.value; touch(); };
+  [0,1,2,3].forEach(i=>{ $('c'+i).oninput=e=>{ A().curve[i]=+e.target.value; drawCurve(); touch(); }; });
+  document.querySelectorAll('.chips button').forEach(b=>b.onclick=()=>{ A().style='Custom'; A().curve=b.dataset.c.split(',').map(Number); fillSimple(); touch(); preview(); });
+  $('estop').onclick=()=>api('/api/emergency',{on:true}).then(poll);
+  $('resume').onclick=()=>api('/api/emergency',{on:false}).then(poll);
   $('aenter').onchange=e=>{ A().on_enter=e.target.checked; touch(); };
   $('aleave').onchange=e=>{ A().on_leave=e.target.checked; touch(); };
   $('guard').onchange=e=>{ cfg.game_guard=e.target.checked; touch(); };
@@ -223,6 +259,10 @@ function fillSimple(){
   const a=cfg.animation;
   $('astyle').value=a.style; $('adur').value=a.duration_ms; $('adist').value=a.distance_px;
   $('aenter').checked=a.on_enter; $('aleave').checked=a.on_leave; $('guard').checked=cfg.game_guard; $('esc').value=String(cfg.escape_hid);
+  if(!a.curve) a.curve=[0.34,1.56,0.64,1];
+  [0,1,2,3].forEach(i=>$('c'+i).value=a.curve[i]);
+  $('customrow').style.display = a.style==='Custom' ? 'block' : 'none';
+  drawCurve();
 }
 
 // ---- devices + pairing
@@ -252,6 +292,8 @@ async function poll(){
     const s=await api('/api/state');
     status=s.status||{}; $('me').textContent=s.me; renderPeers(s.peers); showPairing(s.pairing);
     const g=$('game'); g.textContent='Game mode: '+(s.game_active ? 'ACTIVE (screen switching paused)' : 'off'); g.className='badge'+(s.game_active?' on':'');
+    $('pausedbar').style.display = s.paused ? 'block' : 'none';
+    $('estop').style.display = s.paused ? 'none' : '';
     if(cfg){ renderMap(); renderStatusLine(); }
   }catch(e){ say('Lost connection to SmoothKvm: '+e.message, false); }
 }

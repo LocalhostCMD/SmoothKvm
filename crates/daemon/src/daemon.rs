@@ -13,29 +13,32 @@ use std::time::Duration;
 
 static GEN: AtomicU64 = AtomicU64::new(0);
 
-pub fn run() -> io::Result<()> {
+/// Start everything except the window: input capture, one connection per screen, the panel
+/// server and a config watcher. Returns immediately; the work runs on background threads.
+pub fn start_backend() -> io::Result<()> {
     let ident = Arc::new(Identity::load_or_create()?);
     let token = store::panel_token()?;
     // Binding the panel port doubles as the single-instance lock.
     let server = panel::bind().map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, format!("SmoothKvm is already running ({e})")))?;
-    let mut cfg = store::load_config();
+    let cfg = store::load_config();
     let ctl = capture_win::start(cfg.clone())?;
     {
         let ident = ident.clone();
         std::thread::spawn(move || panel::serve(server, token, ident));
     }
     apply(&cfg, &ctl, &ident);
-    println!("SmoothKvm running");
-    let mut seen = store::config_mtime();
-    loop {
-        std::thread::sleep(Duration::from_millis(700));
-        let now = store::config_mtime();
-        if now != seen {
-            seen = now;
-            cfg = store::load_config();
-            apply(&cfg, &ctl, &ident);
+    std::thread::spawn(move || {
+        let mut seen = store::config_mtime();
+        loop {
+            std::thread::sleep(Duration::from_millis(700));
+            let now = store::config_mtime();
+            if now != seen {
+                seen = now;
+                apply(&store::load_config(), &ctl, &ident);
+            }
         }
-    }
+    });
+    Ok(())
 }
 
 fn apply(cfg: &Config, ctl: &capture_win::Controller, ident: &Arc<Identity>) {

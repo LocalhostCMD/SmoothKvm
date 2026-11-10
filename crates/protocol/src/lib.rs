@@ -55,6 +55,8 @@ pub enum Message {
     /// First message of a short control session.
     DisplayCmd(DisplayAction),
     DisplayState { running: bool, detail: String },
+    /// Emergency stop: release every key and mouse button you are holding down.
+    ReleaseAll,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,6 +65,12 @@ pub enum AnimationStyle {
     Bounce,
     Elastic,
     Slide,
+    /// Goes slightly past the target and settles back.
+    Overshoot,
+    /// Damped spring.
+    Spring,
+    /// Your own cubic-bezier curve (see `Animation::curve`).
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -76,11 +84,108 @@ pub struct Animation {
     pub on_enter: bool,
     /// Animate when the cursor comes back to this PC.
     pub on_leave: bool,
+    /// Control points `[x1, y1, x2, y2]` of the custom curve (same meaning as CSS cubic-bezier).
+    pub curve: [f32; 4],
 }
 
 impl Default for Animation {
     fn default() -> Self {
-        Self { style: AnimationStyle::Bounce, duration_ms: 300, distance_px: 48, on_enter: true, on_leave: true }
+        Self {
+            style: AnimationStyle::Bounce,
+            duration_ms: 300,
+            distance_px: 48,
+            on_enter: true,
+            on_leave: true,
+            curve: [0.34, 1.56, 0.64, 1.0],
+        }
+    }
+}
+
+fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
+    let x = |s: f32| 3.0 * (1.0 - s).powi(2) * s * x1 + 3.0 * (1.0 - s) * s * s * x2 + s.powi(3);
+    let y = |s: f32| 3.0 * (1.0 - s).powi(2) * s * y1 + 3.0 * (1.0 - s) * s * s * y2 + s.powi(3);
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if x(mid) < t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    y((lo + hi) / 2.0)
+}
+
+/// Progress 0..1 -> eased progress (may overshoot 1 for some styles). Always 0 at 0 and 1 at 1.
+/// The panel preview (JavaScript) uses the same formulas.
+pub fn ease(a: &Animation, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t <= 0.0 {
+        return 0.0;
+    }
+    if t >= 1.0 {
+        return 1.0;
+    }
+    match a.style {
+        AnimationStyle::None => 1.0,
+        AnimationStyle::Slide => 1.0 - (1.0 - t).powi(3),
+        AnimationStyle::Overshoot => {
+            let (c1, c3) = (1.70158f32, 2.70158f32);
+            1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
+        }
+        AnimationStyle::Spring => 1.0 - (-7.0 * t).exp() * (12.0 * t).cos(),
+        AnimationStyle::Custom => cubic_bezier(a.curve[0], a.curve[1], a.curve[2], a.curve[3], t),
+        AnimationStyle::Elastic => 2f32.powf(-10.0 * t) * ((t * 10.0 - 0.75) * (2.0 * std::f32::consts::PI / 3.0)).sin() + 1.0,
+        AnimationStyle::Bounce => {
+            let (n1, d1) = (7.5625f32, 2.75f32);
+            if t < 1.0 / d1 {
+                n1 * t * t
+            } else if t < 2.0 / d1 {
+                let t = t - 1.5 / d1;
+                n1 * t * t + 0.75
+            } else if t < 2.5 / d1 {
+                let t = t - 2.25 / d1;
+                n1 * t * t + 0.9375
+            } else {
+                let t = t - 2.625 / d1;
+                n1 * t * t + 0.984375
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_style_starts_at_zero_and_ends_at_one() {
+        for style in [
+            AnimationStyle::None,
+            AnimationStyle::Bounce,
+            AnimationStyle::Elastic,
+            AnimationStyle::Slide,
+            AnimationStyle::Overshoot,
+            AnimationStyle::Spring,
+            AnimationStyle::Custom,
+        ] {
+            let a = Animation { style, ..Animation::default() };
+            assert_eq!(ease(&a, 0.0), 0.0, "{style:?} start");
+            assert_eq!(ease(&a, 1.0), 1.0, "{style:?} end");
+            // the curve should be finite everywhere in between
+            for i in 1..100 {
+                assert!(ease(&a, i as f32 / 100.0).is_finite(), "{style:?} at {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn linear_bezier_is_identity() {
+        let a = Animation { style: AnimationStyle::Custom, curve: [0.0, 0.0, 1.0, 1.0], ..Animation::default() };
+        for i in 1..10 {
+            let t = i as f32 / 10.0;
+            assert!((ease(&a, t) - t).abs() < 0.01, "t={t}");
+        }
     }
 }
 
@@ -161,6 +266,10 @@ impl Config {
         }
         if !(8..=300).contains(&a.distance_px) {
             return Err("animation distance must be 8-300 px".into());
+        }
+        let [x1, y1, x2, y2] = a.curve;
+        if !(0.0..=1.0).contains(&x1) || !(0.0..=1.0).contains(&x2) || !(-2.0..=3.0).contains(&y1) || !(-2.0..=3.0).contains(&y2) {
+            return Err("custom curve: x values must be 0-1 and y values between -2 and 3".into());
         }
         if self.escape_hid == 0 || self.escape_hid > 0xE7 {
             return Err("invalid escape key".into());

@@ -5,7 +5,7 @@
 //! custom headers cross-origin without a preflight, which we never approve), strict
 //! CSP, no CORS headers, request bodies capped at 64 KiB.
 use crate::store::{self, Peers};
-use crate::{capture_win, daemon, shared};
+use crate::{capture_win, daemon, gui, shared};
 use kvm_protocol::secure::to_hex;
 use kvm_protocol::{Config, DisplayAction};
 use serde_json::{json, Value};
@@ -99,6 +99,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                     "status": shared::statuses(),
                     "pairing": shared::pending_pair(),
                     "game_active": capture_win::game_active_now(),
+                    "paused": capture_win::is_paused(),
                     "peers": peers,
                     "me": me,
                 }),
@@ -151,10 +152,25 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
             Ok(port) => json_reply(req, 200, json!({"port": port, "launched": daemon::launch_viewer(port)})),
             Err(e) => json_reply(req, 502, json!({"error": e.to_string()})),
         },
+        ("/api/show", Method::Post) => {
+            gui::show_window();
+            json_reply(req, 200, json!({"ok": true}));
+        }
+        ("/api/emergency", Method::Post) => {
+            let on = data.get("on").and_then(|v| v.as_bool()).unwrap_or(true);
+            if on {
+                capture_win::Controller.emergency_stop();
+            } else {
+                capture_win::Controller.resume();
+            }
+            json_reply(req, 200, json!({"paused": capture_win::is_paused()}));
+        }
         ("/api/quit", Method::Post) => {
             json_reply(req, 200, json!({"ok": true}));
+            gui::quit_app();
+            // Backstop in case the window event loop is wedged.
             std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                std::thread::sleep(std::time::Duration::from_secs(2));
                 std::process::exit(0);
             });
         }

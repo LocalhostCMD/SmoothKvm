@@ -33,7 +33,7 @@ pub fn panel_url() -> io::Result<String> {
 }
 
 /// Start the background app (no console window) if it isn't already running.
-pub fn start() -> io::Result<bool> {
+pub fn start(show: bool) -> io::Result<bool> {
     if running() {
         return Ok(false);
     }
@@ -43,7 +43,7 @@ pub fn start() -> io::Result<bool> {
         std::fs::File::create(store::config_dir().join("smoothkvm.log"))
     })?;
     Command::new(exe)
-        .arg("daemon")
+        .args(if show { vec!["daemon", "--show"] } else { vec!["daemon"] })
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
@@ -75,21 +75,15 @@ pub fn status() -> io::Result<()> {
     Ok(())
 }
 
-/// `SmoothKvm`: make sure it is running and open the panel in its own window.
+/// `SmoothKvm`: start the app if needed and bring its window to the front.
 pub fn open_panel() -> io::Result<()> {
-    if start()? {
-        println!("SmoothKvm started in the background.");
+    if !running() {
+        // Starting it with --show makes the new instance open its own window.
+        start(true)?;
+        return Ok(());
     }
-    let url = panel_url()?;
-    let edge = ["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"];
-    let chrome = ["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"];
-    for exe in edge.iter().chain(chrome.iter()) {
-        if std::path::Path::new(exe).exists() {
-            Command::new(exe).arg(format!("--app={url}")).spawn()?;
-            return Ok(());
-        }
-    }
-    Command::new("cmd").args(["/C", "start", "", &url]).creation_flags(CREATE_NO_WINDOW).spawn()?;
+    let tok = store::panel_token()?;
+    http("POST", "/api/show", Some(&tok), "{}")?;
     Ok(())
 }
 
