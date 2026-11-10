@@ -10,10 +10,18 @@
 use kvm_protocol::secure::{self, SecureConn};
 use kvm_protocol::{InputEvent, Message, MouseButton};
 use std::collections::HashSet;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+mod display;
+#[cfg(not(unix))]
+mod display {
+    pub fn run(_: Option<&str>, _: Option<&str>) -> std::io::Result<()> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "virtual displays are created on the Linux machine"))
+    }
+}
 mod panel;
 mod store;
 use store::{Identity, Peers};
@@ -142,8 +150,18 @@ fn handle_session(stream: TcpStream, ident: &Identity, pairing: bool) -> io::Res
     // The sender pings every 2s; silence for 10s means it's gone.
     conn.set_timeouts(Some(Duration::from_secs(10)), Some(Duration::from_secs(5)))?;
     let mut held = Held::default();
+    let mut first = true;
     let end = loop {
         match conn.recv() {
+            Ok(Message::OpenDisplay) if first => {
+                // Paired peers may reach the local VNC server (127.0.0.1:5900 only, never anything else).
+                println!("display tunnel opened by {peer}");
+                conn.set_timeouts(None, Some(Duration::from_secs(30)))?;
+                let local = TcpStream::connect_timeout(&"127.0.0.1:5900".parse().unwrap(), Duration::from_secs(3))?;
+                pump(local, conn)?;
+                println!("display tunnel closed");
+                return Ok(newly_paired);
+            }
             Ok(Message::Input(ev)) => {
                 held.track(&ev);
                 inject(&ev);
@@ -152,10 +170,73 @@ fn handle_session(stream: TcpStream, ident: &Identity, pairing: bool) -> io::Res
             Ok(_) => {}
             Err(e) => break e,
         }
+        first = false;
     };
     held.release_all();
     println!("session ended: {end}");
     Ok(newly_paired)
+}
+
+/// Copy bytes between a local TCP socket and the encrypted connection, both directions.
+fn pump(local: TcpStream, conn: SecureConn) -> io::Result<()> {
+    local.set_nodelay(true)?;
+    let (mut r, mut w) = conn.split()?;
+    let mut local_r = local.try_clone()?;
+    let mut local_w = local;
+    let up = std::thread::spawn(move || {
+        let mut buf = vec![0u8; 16384];
+        loop {
+            match local_r.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if w.send_raw(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        w.shutdown();
+    });
+    loop {
+        match r.recv_raw() {
+            Ok(d) => {
+                if local_w.write_all(&d).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = local_w.shutdown(std::net::Shutdown::Both);
+    r.shutdown();
+    let _ = up.join();
+    Ok(())
+}
+
+/// Listen on localhost and tunnel each connection (e.g. a VNC viewer) to the receiver's display.
+fn view(addr_override: Option<String>) -> io::Result<()> {
+    let ident = std::sync::Arc::new(Identity::load_or_create()?);
+    let addr = addr_override.unwrap_or_else(|| store::load_config().peer_addr);
+    if addr.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "usage: kvmd view <receiver-addr:24800> (or set it in the panel)"));
+    }
+    let listener = TcpListener::bind("127.0.0.1:5901")?;
+    println!("Point a VNC viewer at  localhost:5901  (encrypted tunnel to {addr}). Ctrl+C to stop.");
+    for s in listener.incoming() {
+        let Ok(s) = s else { continue };
+        let (ident, addr) = (ident.clone(), addr.clone());
+        std::thread::spawn(move || {
+            let res = (|| -> io::Result<()> {
+                let mut conn = connect(&addr, &ident, false)?;
+                conn.send(&Message::OpenDisplay)?;
+                pump(s, conn)
+            })();
+            if let Err(e) = res {
+                eprintln!("display tunnel: {e}");
+            }
+        });
+    }
+    Ok(())
 }
 
 fn serve(addr: &str, mut pairing: bool) -> io::Result<()> {
@@ -271,6 +352,8 @@ fn main() -> io::Result<()> {
             None => Err(io::Error::new(io::ErrorKind::InvalidInput, "usage: kvmd test <addr> [--pair]")),
         },
         Some("panel") => panel::run(true),
+        Some("display") => display::run(args.get(1).map(String::as_str), args.get(2).map(String::as_str)),
+        Some("view") => view(pos.first().map(|s| s.to_string())),
         _ => {
             eprintln!("usage: kvmd listen [addr] [--pair] | send [addr] [--pair] | test <addr> [--pair] | panel");
             Ok(())

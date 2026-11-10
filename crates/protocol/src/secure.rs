@@ -2,16 +2,20 @@
 //!
 //! Noise_XX_25519_ChaChaPoly_BLAKE2s: both sides prove possession of a static
 //! X25519 key, all traffic is encrypted + authenticated (ChaCha20-Poly1305),
-//! sessions have forward secrecy, and nonces are counters so replays fail.
+//! sessions have forward secrecy, and nonces are strict counters so replayed,
+//! dropped or reordered frames fail authentication.
 //! Which keys are *trusted* is decided by the caller (pairing / pinned keys).
 use crate::Message;
-use snow::{Builder, TransportState};
+use snow::{Builder, StatelessTransportState};
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
+use std::sync::Arc;
 use std::time::Duration;
 
 const PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Largest plaintext that fits in one Noise frame (65535 - 16 byte tag).
+pub const MAX_PLAINTEXT: usize = 65519;
 
 fn err<E: std::fmt::Display>(e: E) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.to_string())
@@ -52,9 +56,27 @@ fn read_frame(s: &mut TcpStream) -> io::Result<Vec<u8>> {
     Ok(v)
 }
 
+fn seal(ts: &StatelessTransportState, nonce: &mut u64, buf: &mut [u8], stream: &mut TcpStream, data: &[u8]) -> io::Result<()> {
+    if data.len() > MAX_PLAINTEXT {
+        return Err(err("message too large"));
+    }
+    let n = ts.write_message(*nonce, data, buf).map_err(err)?;
+    *nonce += 1;
+    write_frame(stream, &buf[..n])
+}
+
+fn open(ts: &StatelessTransportState, nonce: &mut u64, buf: &mut [u8], stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+    let ct = read_frame(stream)?;
+    let n = ts.read_message(*nonce, &ct, buf).map_err(err)?;
+    *nonce += 1;
+    Ok(buf[..n].to_vec())
+}
+
 pub struct SecureConn {
     stream: TcpStream,
-    ts: TransportState,
+    ts: Arc<StatelessTransportState>,
+    send_n: u64,
+    recv_n: u64,
     buf: Vec<u8>,
 }
 
@@ -85,10 +107,14 @@ fn handshake(mut stream: TcpStream, private: &[u8], initiator: bool) -> io::Resu
     }
     let remote_key = hs.get_remote_static().ok_or_else(|| err("no remote key"))?.to_vec();
     let hash = hs.get_handshake_hash().to_vec();
-    let ts = hs.into_transport_mode().map_err(err)?;
+    let ts = hs.into_stateless_transport_mode().map_err(err)?;
     let n = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) % 1_000_000;
     let sas = format!("{:03} {:03}", n / 1000, n % 1000);
-    Ok(Established { conn: SecureConn { stream, ts, buf }, remote_key, sas })
+    Ok(Established {
+        conn: SecureConn { stream, ts: Arc::new(ts), send_n: 0, recv_n: 0, buf },
+        remote_key,
+        sas,
+    })
 }
 
 pub fn connect(stream: TcpStream, private: &[u8]) -> io::Result<Established> {
@@ -101,14 +127,11 @@ pub fn accept(stream: TcpStream, private: &[u8]) -> io::Result<Established> {
 
 impl SecureConn {
     pub fn send_raw(&mut self, data: &[u8]) -> io::Result<()> {
-        let n = self.ts.write_message(data, &mut self.buf).map_err(err)?;
-        write_frame(&mut self.stream, &self.buf[..n])
+        seal(&self.ts, &mut self.send_n, &mut self.buf, &mut self.stream, data)
     }
 
     pub fn recv_raw(&mut self) -> io::Result<Vec<u8>> {
-        let ct = read_frame(&mut self.stream)?;
-        let n = self.ts.read_message(&ct, &mut self.buf).map_err(err)?;
-        Ok(self.buf[..n].to_vec())
+        open(&self.ts, &mut self.recv_n, &mut self.buf, &mut self.stream)
     }
 
     pub fn send(&mut self, msg: &Message) -> io::Result<()> {
@@ -131,6 +154,48 @@ impl SecureConn {
     pub fn set_timeouts(&self, read: Option<Duration>, write: Option<Duration>) -> io::Result<()> {
         self.stream.set_read_timeout(read)?;
         self.stream.set_write_timeout(write)
+    }
+
+    /// Split into independent reader/writer halves so two threads can pump data
+    /// in both directions (each direction has its own key and nonce counter).
+    pub fn split(self) -> io::Result<(SecureReader, SecureWriter)> {
+        let wstream = self.stream.try_clone()?;
+        Ok((
+            SecureReader { stream: self.stream, ts: self.ts.clone(), n: self.recv_n, buf: vec![0u8; 65535] },
+            SecureWriter { stream: wstream, ts: self.ts, n: self.send_n, buf: vec![0u8; 65535] },
+        ))
+    }
+}
+
+pub struct SecureReader {
+    stream: TcpStream,
+    ts: Arc<StatelessTransportState>,
+    n: u64,
+    buf: Vec<u8>,
+}
+
+impl SecureReader {
+    pub fn recv_raw(&mut self) -> io::Result<Vec<u8>> {
+        open(&self.ts, &mut self.n, &mut self.buf, &mut self.stream)
+    }
+    pub fn shutdown(&self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+pub struct SecureWriter {
+    stream: TcpStream,
+    ts: Arc<StatelessTransportState>,
+    n: u64,
+    buf: Vec<u8>,
+}
+
+impl SecureWriter {
+    pub fn send_raw(&mut self, data: &[u8]) -> io::Result<()> {
+        seal(&self.ts, &mut self.n, &mut self.buf, &mut self.stream, data)
+    }
+    pub fn shutdown(&self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
     }
 }
 
@@ -159,6 +224,28 @@ mod tests {
         assert_eq!(seen_key, a_pub);
         assert_eq!(e.remote_key, b_pub);
         assert_eq!(e.sas, sas_b);
+    }
+
+    #[test]
+    fn split_halves_work_both_ways() {
+        let (a_priv, _) = generate_keypair().unwrap();
+        let (b_priv, _) = generate_keypair().unwrap();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let e = accept(s, &b_priv).unwrap();
+            let (mut r, mut w) = e.conn.split().unwrap();
+            let got = r.recv_raw().unwrap();
+            w.send_raw(&got).unwrap(); // echo
+            w.send_raw(b"second").unwrap();
+        });
+        let e = connect(TcpStream::connect(addr).unwrap(), &a_priv).unwrap();
+        let (mut r, mut w) = e.conn.split().unwrap();
+        w.send_raw(b"hello").unwrap();
+        assert_eq!(r.recv_raw().unwrap(), b"hello");
+        assert_eq!(r.recv_raw().unwrap(), b"second");
+        t.join().unwrap();
     }
 
     #[test]

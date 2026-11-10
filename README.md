@@ -43,3 +43,18 @@ Linux/Windows injection, local config panel.
 
 ## Roadmap
 Clipboard, tray icon + autostart, on-demand video from the DL380.
+
+## On-demand display for a headless machine
+On the Linux box (as your normal user, no sudo): `sudo apt install xvfb x11vnc xfce4`, then
+```
+kvmd display start [1920x1080]    # Xvfb + XFCE + x11vnc (127.0.0.1 only)
+kvmd display stop
+kvmd display status
+```
+The receiver (`sudo kvmd listen`) must be running. On Windows:
+```
+kvmd view 10.0.0.180:24800        # then connect any VNC viewer to localhost:5901
+```
+The VNC stream travels inside the same paired, encrypted connection; no extra port is exposed.
+Note: the VNC viewer supplies its own keyboard/mouse for that display. Edge-switching input
+(uinput) controls a real desktop, not the Xvfb screen.

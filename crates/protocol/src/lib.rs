@@ -42,6 +42,8 @@ pub enum Message {
     Clipboard(String),
     Ping,
     Pong,
+    /// First message of a session that tunnels the receiver's virtual display (VNC).
+    OpenDisplay,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
