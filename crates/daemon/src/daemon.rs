@@ -1,7 +1,13 @@
 //! The SmoothKvm background app (Windows): keeps one secure connection per remote screen,
 //! runs the input capture and serves the config panel.
 use crate::store::{self, Identity};
-use crate::{capture_win, net, panel, shared};
+#[cfg(unix)]
+use crate::capture_linux::Controller;
+#[cfg(windows)]
+use crate::capture_win::Controller;
+use crate::{net, shared};
+#[cfg(windows)]
+use crate::{capture_win, panel};
 use kvm_protocol::{Config, DisplayAction, InputEvent, Message, Remote};
 use std::io;
 use std::net::TcpListener;
@@ -12,6 +18,7 @@ use std::time::Duration;
 
 static GEN: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(windows)]
 /// Start everything except the window: input capture, one connection per screen, the panel
 /// server and a config watcher. Returns immediately; the work runs on background threads.
 pub fn start_backend() -> io::Result<()> {
@@ -40,7 +47,7 @@ pub fn start_backend() -> io::Result<()> {
     Ok(())
 }
 
-fn apply(cfg: &Config, ctl: &capture_win::Controller, ident: &Arc<Identity>) {
+fn apply(cfg: &Config, ctl: &Controller, ident: &Arc<Identity>) {
     let generation = GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let mut senders = Vec::new();
     for (i, r) in cfg.remotes.iter().enumerate() {
@@ -54,6 +61,8 @@ fn apply(cfg: &Config, ctl: &capture_win::Controller, ident: &Arc<Identity>) {
         }
     }
     ctl.set_remotes(generation, cfg.clone(), senders);
+    crate::clip::ENABLED.store(cfg.clipboard, Ordering::SeqCst);
+    #[cfg(windows)]
     // "Let other computers control this PC" (off by default).
     crate::sync_receiver(cfg.receive, cfg.port);
 }
@@ -73,7 +82,7 @@ fn remote_thread(
     r: Remote,
     rx: Receiver<Message>,
     ident: Arc<Identity>,
-    ctl: capture_win::Controller,
+    ctl: Controller,
 ) {
     let mut last_err = String::new();
     while GEN.load(Ordering::SeqCst) == generation {
@@ -85,15 +94,47 @@ fn remote_thread(
         shared::set_status(&r.name, "connecting", "");
         let pin = shared::take_pair_request(&r.name);
         match net::connect(&r.addr, &ident, pin.as_deref(), &r.name) {
-            Ok(mut conn) => {
+            Ok(conn) => {
                 shared::set_status(&r.name, "connected", "");
                 shared::info(&format!("Connected to {} ({})", r.name, r.addr));
                 last_err.clear();
                 while rx.try_recv().is_ok() {}
                 ctl.set_connected(generation, idx, true);
+                let (mut rd, mut wr) = match conn.split() {
+                    Ok(x) => x,
+                    Err(e) => {
+                        shared::set_status(&r.name, "offline", &e.to_string());
+                        continue;
+                    }
+                };
+                let cs = Arc::new(std::sync::Mutex::new(crate::clip::ClipSync::new()));
+                {
+                    // The other computer may send its clipboard text (applied only when sharing is on).
+                    let cs = cs.clone();
+                    std::thread::spawn(move || {
+                        while let Ok(m) = rd.recv() {
+                            if let Message::Clipboard(t) = m {
+                                if let Ok(mut c) = cs.lock() {
+                                    c.incoming(t);
+                                }
+                            }
+                        }
+                        rd.shutdown();
+                    });
+                }
+                let mut last_clip = std::time::Instant::now();
                 let end = loop {
                     if GEN.load(Ordering::SeqCst) != generation {
                         break io::Error::new(io::ErrorKind::Other, "configuration changed");
+                    }
+                    if last_clip.elapsed() >= Duration::from_millis(600) {
+                        last_clip = std::time::Instant::now();
+                        let text = cs.lock().ok().and_then(|mut c| c.outgoing());
+                        if let Some(t) = text {
+                            if let Err(e) = wr.send(&Message::Clipboard(t)) {
+                                break e;
+                            }
+                        }
                     }
                     match rx.recv_timeout(Duration::from_secs(1)) {
                         Ok(m) => {
@@ -108,7 +149,7 @@ fn remote_thread(
                             }
                             let mut failed = None;
                             for msg in coalesce(batch) {
-                                if let Err(e) = conn.send(&msg) {
+                                if let Err(e) = wr.send(&msg) {
                                     failed = Some(e);
                                     break;
                                 }
@@ -118,7 +159,7 @@ fn remote_thread(
                             }
                         }
                         Err(RecvTimeoutError::Timeout) => {
-                            if let Err(e) = conn.send(&Message::Ping) {
+                            if let Err(e) = wr.send(&Message::Ping) {
                                 break e;
                             }
                         }
@@ -126,6 +167,7 @@ fn remote_thread(
                     }
                 };
                 ctl.set_connected(generation, idx, false);
+                wr.shutdown();
                 shared::set_status(&r.name, "offline", &end.to_string());
                 shared::warn(&format!("Connection to {} ended: {end}", r.name));
             }
@@ -184,6 +226,7 @@ mod tests {
     }
 }
 
+#[cfg_attr(unix, allow(dead_code))]
 fn find_remote(name: &str) -> io::Result<Remote> {
     store::load_config()
         .remotes
@@ -193,6 +236,7 @@ fn find_remote(name: &str) -> io::Result<Remote> {
 }
 
 /// Start/stop/query the virtual display on a receiver over a short control session.
+#[cfg_attr(unix, allow(dead_code))]
 pub fn control_display(name: &str, ident: &Identity, action: DisplayAction) -> io::Result<(bool, String)> {
     let r = find_remote(name)?;
     let mut conn = net::connect(&r.addr, ident, None, &r.name)?;
@@ -207,6 +251,7 @@ pub fn control_display(name: &str, ident: &Identity, action: DisplayAction) -> i
 /// Open a ONE-SHOT localhost listener that tunnels to this screen's virtual display; returns its port.
 /// It accepts exactly one connection within 60 seconds and then closes. Nothing else running on this PC
 /// (or any other account on it) gets a second chance to use your remote desktop through it.
+#[cfg_attr(unix, allow(dead_code))]
 pub fn ensure_tunnel(name: &str, ident: Arc<Identity>) -> io::Result<u16> {
     find_remote(name)?;
     let (listener, port) = (5901u16..5931)
@@ -244,6 +289,7 @@ pub fn ensure_tunnel(name: &str, ident: Arc<Identity>) -> io::Result<u16> {
     Ok(port)
 }
 
+#[cfg(windows)]
 /// Launch a VNC viewer pointed at the tunnel. Returns false if no viewer was found.
 pub fn launch_viewer(port: u16) -> bool {
     let target = format!("localhost:{port}");
@@ -260,4 +306,24 @@ pub fn launch_viewer(port: u16) -> bool {
         }
     }
     std::process::Command::new("vncviewer").arg(&target).spawn().is_ok()
+}
+
+/// Linux: also act as a controller (hotkey switching to the screens in the config) while the receiver runs.
+#[cfg(unix)]
+pub fn start_links(ident: Arc<Identity>) -> io::Result<()> {
+    let cfg = store::load_config();
+    let ctl = crate::capture_linux::start(cfg.clone())?;
+    apply(&cfg, &ctl, &ident);
+    std::thread::spawn(move || {
+        let mut seen = store::config_mtime();
+        loop {
+            std::thread::sleep(Duration::from_millis(700));
+            let now = store::config_mtime();
+            if now != seen {
+                seen = now;
+                apply(&store::load_config(), &ctl, &ident);
+            }
+        }
+    });
+    Ok(())
 }

@@ -20,6 +20,7 @@ use std::time::Duration;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+mod clip;
 mod ctl;
 mod httpd;
 mod net;
@@ -35,7 +36,6 @@ mod display;
 mod app;
 #[cfg(windows)]
 mod capture_win;
-#[cfg(windows)]
 mod daemon;
 #[cfg(windows)]
 mod dpapi;
@@ -45,6 +45,8 @@ mod fx_win;
 mod gui;
 #[cfg(windows)]
 mod inject_win;
+#[cfg(target_os = "linux")]
+mod capture_linux;
 #[cfg(target_os = "linux")]
 mod inject_linux;
 #[cfg(windows)]
@@ -179,40 +181,79 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str) -> io::Result<()> {
     // The sender pings every second; silence for 10s means it's gone.
     conn.set_timeouts(Some(Duration::from_secs(10)), Some(Duration::from_secs(5)))?;
     let mut held = Held::default();
-    let mut first = true;
+    // The first message decides what kind of session this is.
+    let first = match conn.recv() {
+        Ok(m) => m,
+        Err(e) => {
+            println!("session ended: {e}");
+            return Ok(());
+        }
+    };
+    match first {
+        Message::OpenDisplay => {
+            // Paired peers may reach the local VNC server (127.0.0.1:5900 only, never anything else).
+            println!("display tunnel opened by {peer}");
+            shared::info(&format!("{peer} opened the remote display"));
+            conn.set_timeouts(None, Some(Duration::from_secs(30)))?;
+            let local = TcpStream::connect_timeout(&"127.0.0.1:5900".parse().unwrap(), Duration::from_secs(3))?;
+            net::pump(local, conn)?;
+            println!("display tunnel closed");
+            return Ok(());
+        }
+        Message::DisplayCmd(action) => {
+            println!("display command from {peer}: {action:?}");
+            shared::info(&format!("{peer} sent a display command: {action:?}"));
+            let (running, detail) = display_command(action);
+            conn.send(&Message::DisplayState { running, detail })?;
+            return Ok(());
+        }
+        other => apply_message(other, &mut held, &mut clip::ClipSync::new()),
+    }
+    // Input session: read in this thread, and (when sharing is on) send our clipboard changes from another.
+    let (mut rd, mut wr) = conn.split()?;
+    let cs = Arc::new(std::sync::Mutex::new(clip::ClipSync::new()));
+    let alive = Arc::new(AtomicBool::new(true));
+    {
+        let (cs, alive) = (cs.clone(), alive.clone());
+        std::thread::spawn(move || {
+            while alive.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(600));
+                let text = cs.lock().ok().and_then(|mut c| c.outgoing());
+                if let Some(t) = text {
+                    if wr.send(&Message::Clipboard(t)).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+    }
     let end = loop {
-        match conn.recv() {
-            Ok(Message::OpenDisplay) if first => {
-                // Paired peers may reach the local VNC server (127.0.0.1:5900 only, never anything else).
-                println!("display tunnel opened by {peer}");
-                shared::info(&format!("{peer} opened the remote display"));
-                conn.set_timeouts(None, Some(Duration::from_secs(30)))?;
-                let local = TcpStream::connect_timeout(&"127.0.0.1:5900".parse().unwrap(), Duration::from_secs(3))?;
-                net::pump(local, conn)?;
-                println!("display tunnel closed");
-                return Ok(());
+        match rd.recv() {
+            Ok(m) => {
+                if let Ok(mut c) = cs.lock() {
+                    apply_message(m, &mut held, &mut c);
+                }
             }
-            Ok(Message::DisplayCmd(action)) if first => {
-                println!("display command from {peer}: {action:?}");
-                shared::info(&format!("{peer} sent a display command: {action:?}"));
-                let (running, detail) = display_command(action);
-                conn.send(&Message::DisplayState { running, detail })?;
-                return Ok(());
-            }
-            Ok(Message::Input(ev)) => {
-                let ev = sanitize(ev);
-                held.track(&ev);
-                inject(&ev);
-            }
-            Ok(Message::Leave) | Ok(Message::ReleaseAll) => held.release_all(),
-            Ok(_) => {}
             Err(e) => break e,
         }
-        first = false;
     };
+    alive.store(false, Ordering::SeqCst);
     held.release_all();
     println!("session ended: {end}");
     Ok(())
+}
+
+fn apply_message(m: Message, held: &mut Held, cs: &mut clip::ClipSync) {
+    match m {
+        Message::Input(ev) => {
+            let ev = sanitize(ev);
+            held.track(&ev);
+            inject(&ev);
+        }
+        Message::Leave | Message::ReleaseAll => held.release_all(),
+        Message::Clipboard(t) => cs.incoming(t),
+        _ => {}
+    }
 }
 
 const MAX_SESSIONS: usize = 16;
@@ -231,6 +272,12 @@ fn serve(addr: &str, pair: bool, ctl_server: bool) -> io::Result<()> {
         let token = store::panel_token()?;
         let server = rctl::bind()?;
         let id = ident.clone();
+        #[cfg(unix)]
+        {
+            if let Err(e) = daemon::start_links(ident.clone()) {
+                shared::warn(&format!("Controlling other computers from here is unavailable: {e}"));
+            }
+        }
         std::thread::spawn(move || rctl::serve(server, token, id));
     }
     if pair {

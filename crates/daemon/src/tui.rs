@@ -37,6 +37,7 @@ enum Msg {
 }
 
 const SENDER_CMDS: &[(&str, &str)] = &[
+    ("/clipboard", "/clipboard on|off   share copied text with paired computers"),
     ("/log", "/log [alerts]   recent activity and security alerts"),
     ("/status", "show screens, connections and settings"),
     ("/screens", "list your screens"),
@@ -63,9 +64,14 @@ const SENDER_CMDS: &[(&str, &str)] = &[
 ];
 
 const RECEIVER_CMDS: &[(&str, &str)] = &[
+    ("/clipboard", "/clipboard on|off   share copied text with paired computers"),
+    ("/screens", "list the screens this computer can control (switch with the Scroll Lock key)"),
+    ("/add", "/add <name> <left|right|top|bottom> <host:port>   a screen to control from this computer"),
+    ("/remove", "/remove <name>"),
+    ("/resume", "resume after an emergency stop"),
     ("/log", "/log [alerts]   recent activity and security alerts"),
     ("/status", "show connections and settings"),
-    ("/pair", "/pair [seconds]   open pairing and show the 8-digit PIN to type on the controlling PC"),
+    ("/pair", "/pair [seconds] opens pairing (PIN shown here);  /pair <name> <PIN> pairs with a screen you added"),
     ("/devices", "list paired devices"),
     ("/unpair", "/unpair <name>"),
     ("/display", "/display start|stop|status [WxH]"),
@@ -205,8 +211,8 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             }
             Ok(out)
         }
-        ("/screens", true) => Ok(remote_lines(&state_of(c)?)),
-        ("/add", true) => {
+        ("/screens", _) => Ok(remote_lines(&state_of(c)?)),
+        ("/add", _) => {
             if a.len() < 3 {
                 return Err("usage: /add <name> <left|right|top|bottom> <host:port> [WxH]".into());
             }
@@ -225,7 +231,7 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             set_config(c, &cfg)?;
             Ok(vec![(Kind::Good, format!("Added {} on the {}.", a[0], edge.to_lowercase())), (Kind::Dim, format!("Next: start pairing mode on that device, then  /pair {}", a[0]))])
         }
-        ("/remove", true) => {
+        ("/remove", _) => {
             let name = a.first().ok_or("usage: /remove <name>")?;
             let mut cfg = state_of(c)?["config"].clone();
             let i = remote_index(&cfg, name).ok_or("no such screen")?;
@@ -233,7 +239,7 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             set_config(c, &cfg)?;
             Ok(vec![(Kind::Good, format!("Removed {name}."))])
         }
-        ("/pair", true) => {
+        ("/pair", _) if sender || a.len() >= 2 => {
             let (name, pin) = match (a.first(), a.get(1)) {
                 (Some(n), Some(p)) => (*n, *p),
                 _ => return Err("usage: pair <name> <8-digit PIN shown on that device>   (on that device run: pair)".into()),
@@ -351,6 +357,20 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             set_config(c, &cfg)?;
             Ok(vec![(Kind::Good, format!("Game mode {}.", if on { "on - no screen switching during full-screen apps" } else { "off" }))])
         }
+        ("/clipboard", _) => {
+            let on = match a.first().map(|s| s.to_lowercase()).as_deref() {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err("usage: /clipboard on|off".into()),
+            };
+            let mut cfg = state_of(c)?["config"].clone();
+            cfg["clipboard"] = json!(on);
+            set_config(c, &cfg)?;
+            Ok(vec![
+                (Kind::Good, format!("Clipboard sharing is {}.", if on { "ON" } else { "off" })),
+                (Kind::Dim, "Only plain text copied after connecting is shared, up to 32 KB, with paired computers that also have it on. Text from password managers is skipped.".into()),
+            ])
+        }
         ("/receive", true) => {
             let on = match a.first().map(|s| s.to_lowercase()).as_deref() {
                 Some("on") => true,
@@ -381,7 +401,7 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             c.post("/api/release", &json!({}))?;
             Ok(vec![(Kind::Bad, "Released every key and mouse button on this machine.".into())])
         }
-        ("/resume", true) => {
+        ("/resume", _) => {
             c.post("/api/emergency", &json!({"on": false}))?;
             Ok(vec![(Kind::Good, "Screen switching resumed.".into())])
         }

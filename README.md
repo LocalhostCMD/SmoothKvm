@@ -46,3 +46,10 @@ Releases include `SHA256SUMS` + GPG signatures and Authenticode-signed Windows f
 
 ## Transparency
 The Windows app is never hidden: it always shows its window, and closing the window quits it completely. It has an activity and security log (also `/log` in the terminal). See SECURITY.md.
+
+## Controlling from Ubuntu
+The Ubuntu machine can control your other computers too (the app is the same on every device). In the terminal UI on Ubuntu:
+`/add Desktop right 192.168.1.20` then, after the other computer opens pairing, `/pair Desktop <PIN>`. Press **Scroll Lock** to jump to the next connected screen, again to cycle, and finally back to this computer. Three quick presses = emergency stop. (Wayland does not let apps see the mouse position, so Ubuntu switches with a key instead of by pushing the mouse to an edge.) While another screen is active, this computer's keyboard and mouse are handed to it and a notification tells you who has control.
+
+## Clipboard sharing
+`/clipboard on` (or the checkbox in the Windows app) on both computers. Plain text only, up to 32 KB, only what you copy after connecting, nothing from password managers on Windows, never written to the log. On Linux it needs `wl-clipboard` or `xclip` (the package recommends them).

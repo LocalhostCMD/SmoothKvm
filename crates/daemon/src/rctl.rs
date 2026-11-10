@@ -10,6 +10,21 @@ use std::io;
 use std::sync::Arc;
 use tiny_http::{Method, Request, Server};
 
+#[cfg(target_os = "linux")]
+use crate::capture_linux as cap;
+/// Placeholder so this file also builds on platforms without the Linux controller.
+#[cfg(not(target_os = "linux"))]
+mod cap {
+    pub struct Controller;
+    impl Controller {
+        pub fn emergency_stop(&self) {}
+        pub fn resume(&self) {}
+    }
+    pub fn is_paused() -> bool {
+        false
+    }
+}
+
 pub fn bind() -> io::Result<Server> {
     Server::http(("127.0.0.1", port())).map_err(|e| io::Error::new(io::ErrorKind::AddrInUse, e.to_string()))
 }
@@ -67,6 +82,9 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
                     "sessions": shared::sessions(),
                     "pairing_open_secs": shared::pairing_remaining(),
                     "pairing_pin": shared::pairing_pin(),
+                    "config": store::load_config(),
+                    "status": shared::statuses(),
+                    "paused": cap::is_paused(),
                     "display": {"running": running, "detail": detail},
                 }),
             );
@@ -96,6 +114,37 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
             };
             let (running, detail) = display_do(action);
             json_reply(req, 200, json!({"running": running, "detail": detail}));
+        }
+        ("/api/config", Method::Post) => match serde_json::from_value::<kvm_protocol::Config>(data) {
+            Ok(cfg) => match cfg.validate() {
+                Ok(()) => match store::save_config(&cfg) {
+                    Ok(()) => {
+                        shared::info("Settings changed");
+                        json_reply(req, 200, json!({"ok": true}))
+                    }
+                    Err(e) => json_reply(req, 500, json!({"error": e.to_string()})),
+                },
+                Err(e) => json_reply(req, 400, json!({"error": e})),
+            },
+            Err(e) => json_reply(req, 400, json!({"error": e.to_string()})),
+        },
+        ("/api/pair", Method::Post) => {
+            let pin = str_field(&data, "pin");
+            if pin.len() != 8 || !pin.chars().all(|c| c.is_ascii_digit()) {
+                return json_reply(req, 400, json!({"error": "the PIN is 8 digits"}));
+            }
+            shared::request_pair(&str_field(&data, "name"), &pin);
+            shared::info(&format!("Pairing with \"{}\" requested", str_field(&data, "name")));
+            json_reply(req, 200, json!({"ok": true}))
+        }
+        ("/api/emergency", Method::Post) => {
+            if data.get("on").and_then(|v| v.as_bool()).unwrap_or(true) {
+                cap::Controller.emergency_stop();
+                crate::release_everything();
+            } else {
+                cap::Controller.resume();
+            }
+            json_reply(req, 200, json!({"paused": cap::is_paused()}))
         }
         ("/api/release", Method::Post) => {
             crate::release_everything();

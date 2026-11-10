@@ -111,6 +111,7 @@ button.stop{background:var(--bad);font-weight:600}
 <div class="card">
   <h2>Control this PC from other computers</h2>
   <label class="check"><input id="recv" type="checkbox"> Let paired computers control this PC (listens on the port set in the config, default 24800)</label>
+  <label class="check"><input id="clip" type="checkbox"> Share copied text (clipboard) with paired computers while connected - plain text only, up to 32 KB, never logged, password-manager copies are skipped. Turn it on on both computers.</label>
   <div class="btns"><button class="ghost" id="allow">Allow a new device to pair (2 minutes)</button></div>
   <div class="hint" id="recvinfo">Off. Nothing is listening.</div>
 </div>
@@ -289,6 +290,7 @@ function bindSimple(){
   $('aleave').onchange=e=>{ A().on_leave=e.target.checked; touch(); };
   $('guard').onchange=e=>{ cfg.game_guard=e.target.checked; touch(); };
   $('recv').onchange=e=>{ cfg.receive=e.target.checked; touch(); };
+  $('clip').onchange=e=>{ cfg.clipboard=e.target.checked; touch(); };
   $('allow').onclick=async()=>{ try{ const r=await api('/api/pair/open',{secs:120}); say('Pairing open: type PIN '+r.pin+' on the other computer (valid '+r.secs+'s, one attempt)', true); }catch(e){ say(e.message,false); } };
   $('esc').onchange=e=>{ cfg.escape_hid=+e.target.value; touch(); };
   $('preview').onclick=async()=>{ try{ await api('/api/effect/test',{animation:cfg.animation}); }catch(e){ say(e.message,false); } };
@@ -298,6 +300,7 @@ function fillSimple(){
   $('astyle').value=a.style; $('adur').value=a.duration_ms; $('asize').value=a.size_px; $('avisual').value=a.visual; $('apal').value=a.palette;
   $('aenter').checked=a.on_enter; $('aleave').checked=a.on_leave; $('guard').checked=cfg.game_guard; $('esc').value=String(cfg.escape_hid);
   $('recv').checked=!!cfg.receive;
+  $('clip').checked=!!cfg.clipboard;
   if(!a.curve) a.curve=[0.34,1.56,0.64,1];
   [0,1,2,3].forEach(i=>$('c'+i).value=a.curve[i]);
   $('customrow').style.display = a.style==='Custom' ? 'block' : 'none';

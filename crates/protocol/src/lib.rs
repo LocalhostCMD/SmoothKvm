@@ -250,12 +250,14 @@ pub struct Config {
     pub game_guard: bool,
     /// Let paired computers control THIS machine too (it listens on `port`). Off by default.
     pub receive: bool,
+    /// Share copied TEXT with paired computers while connected (off by default; never logged).
+    pub clipboard: bool,
     pub animation: Animation,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { port: 24800, remotes: vec![], escape_hid: 0x47, game_guard: true, receive: false, animation: Animation::default() }
+        Self { port: 24800, remotes: vec![], escape_hid: 0x47, game_guard: true, receive: false, clipboard: false, animation: Animation::default() }
     }
 }
 

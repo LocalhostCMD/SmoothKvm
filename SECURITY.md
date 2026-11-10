@@ -33,6 +33,9 @@ Only do this after verifying the thumbprint above through a channel you trust.
 - No telemetry, no accounts, no auto-update, no internet connections of its own. It only connects to the addresses you add, and listens only when you turn on "Let paired computers control this PC".
 - The app shows an activity and security log (also `/log` in the terminal, saved to `events.log` in the settings folder). Pairing, new devices, sessions, emergency stops, removed devices, and refused or failed connection attempts are recorded; failed attempts are marked as security alerts and counted on the tray icon.
 
+- Linux note: the Linux program runs as a systemd service (`systemctl status smoothkvm`, `sudo systemctl stop smoothkvm`) and shows the same activity/security log in the terminal UI (`/log`). When it is controlling another computer it holds the keyboard and mouse exclusively, which needs membership of the `input` group; three quick Scroll Lock presses release everything.
+- Clipboard sharing is off by default, text-only, size-capped and never logged.
+
 ## What protects what
 - Transport: Noise_XX_25519_ChaChaPoly_BLAKE2s; pairing: Noise_XXpsk3 with a single-use 8-digit PIN that is burned after
   any attempt. Receivers accept only paired keys, clamp every received number, and release held keys if the controller

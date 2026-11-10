@@ -238,6 +238,10 @@ pub struct SecureReader {
 }
 
 impl SecureReader {
+    pub fn recv(&mut self) -> io::Result<Message> {
+        let body = self.recv_raw()?;
+        decode_message(&body)
+    }
     pub fn recv_raw(&mut self) -> io::Result<Vec<u8>> {
         open(&self.ts, &mut self.n, &mut self.buf, &mut self.stream)
     }
@@ -254,6 +258,10 @@ pub struct SecureWriter {
 }
 
 impl SecureWriter {
+    pub fn send(&mut self, msg: &Message) -> io::Result<()> {
+        let body = encode_message(msg)?;
+        self.send_raw(&body)
+    }
     pub fn send_raw(&mut self, data: &[u8]) -> io::Result<()> {
         seal(&self.ts, &mut self.n, &mut self.buf, &mut self.stream, data)
     }
