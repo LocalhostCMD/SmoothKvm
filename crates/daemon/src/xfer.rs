@@ -361,7 +361,13 @@ pub fn downloads_dir() -> PathBuf {
     }
 }
 
+/// Where received files are saved: the folder chosen in the settings, or Downloads/SmoothKvm.
 pub fn inbox() -> PathBuf {
+    let chosen = store::load_config().inbox_dir;
+    let chosen = chosen.trim();
+    if !chosen.is_empty() && Path::new(chosen).is_absolute() {
+        return PathBuf::from(chosen);
+    }
     downloads_dir().join("SmoothKvm")
 }
 

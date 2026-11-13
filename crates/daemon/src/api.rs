@@ -105,6 +105,16 @@ pub fn route(path: &str, method: &Method, data: &Value, ident: &Arc<Identity>) -
             shared::info(&format!("Pairing with \"{name}\" ({addr})"));
             ok(json!({"name": name, "addr": addr}))
         }
+        // The system's folder picker, for "save received files in" (the page itself cannot see your folders).
+        ("/api/pick-folder", Method::Post) => {
+            let start = PathBuf::from(data["start"].as_str().unwrap_or(""));
+            let start = if start.is_absolute() && start.is_dir() { start } else { crate::xfer::downloads_dir() };
+            match pick_folder(&start) {
+                Ok(Some(p)) => ok(json!({"path": p})),
+                Ok(None) => ok(json!({"cancelled": true})),
+                Err(e) => bad(501, e),
+            }
+        }
         ("/api/update/check", Method::Post) => ok(update::check_now()),
         ("/api/update/apply", Method::Post) => match update::apply_async() {
             Ok(()) => ok(update::state()),
@@ -121,6 +131,77 @@ pub fn route(path: &str, method: &Method, data: &Value, ident: &Arc<Identity>) -
         }
         _ => None,
     }
+}
+
+/// Show the system folder picker; Ok(None) if you cancelled it.
+#[cfg(windows)]
+fn pick_folder(start: &std::path::Path) -> Result<Option<String>, String> {
+    use windows::core::{w, HSTRING};
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, SIGDN_FILESYSPATH};
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let e = |e: windows::core::Error| e.message().to_string();
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).map_err(e)?;
+        let opts = dlg.GetOptions().map_err(e)?;
+        dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST).map_err(e)?;
+        let _ = dlg.SetTitle(w!("Where should SmoothKvm save files from your other computers?"));
+        if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(start.as_os_str()), None) {
+            let _ = dlg.SetFolder(&item);
+        }
+        // on top of the SmoothKvm window (the one you just clicked in)
+        if let Err(err) = dlg.Show(GetForegroundWindow()) {
+            return if err.code().0 as u32 == 0x8007_04C7 { Ok(None) } else { Err(e(err)) };
+        }
+        let p = dlg.GetResult().map_err(e)?.GetDisplayName(SIGDN_FILESYSPATH).map_err(e)?;
+        let s = p.to_string().map_err(|x| x.to_string());
+        CoTaskMemFree(Some(p.0 as *const _));
+        s.map(Some)
+    }
+}
+
+#[cfg(unix)]
+fn pick_folder(start: &std::path::Path) -> Result<Option<String>, String> {
+    use std::process::Command;
+    // the service is not part of the desktop session: point the picker at it
+    let uid = unsafe { libc::getuid() };
+    let run = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{uid}"));
+    let wayland = std::env::var("WAYLAND_DISPLAY").ok().or_else(|| (0..3).map(|i| format!("wayland-{i}")).find(|n| std::path::Path::new(&run).join(n).exists()));
+    let prep = |c: &mut Command| {
+        c.env("XDG_RUNTIME_DIR", &run).env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={run}/bus"));
+        if let Some(w) = &wayland {
+            c.env("WAYLAND_DISPLAY", w);
+        }
+        if std::env::var_os("DISPLAY").is_none() {
+            c.env("DISPLAY", ":0");
+        }
+    };
+    let start_s = start.to_string_lossy().to_string();
+    let title = "Where should SmoothKvm save files from your other computers?";
+    let mut tried = false;
+    for (prog, args) in [
+        ("kdialog", vec!["--title".to_string(), title.to_string(), "--getexistingdirectory".to_string(), start_s.clone()]),
+        ("zenity", vec!["--file-selection".to_string(), "--directory".to_string(), format!("--title={title}"), format!("--filename={start_s}/")]),
+    ] {
+        let mut c = Command::new(prog);
+        c.args(&args).stdin(std::process::Stdio::null());
+        prep(&mut c);
+        match c.output() {
+            Ok(o) => {
+                tried = true;
+                let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if o.status.success() && p.starts_with('/') {
+                    return Ok(Some(p));
+                }
+                if o.status.code() == Some(1) {
+                    return Ok(None); // cancelled
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    Err(if tried { "the folder picker did not open; type the folder path instead".into() } else { "no folder picker found (kdialog or zenity); type the folder path instead".into() })
 }
 
 // ---- files dropped on the app page in a normal browser (Linux): the page can upload their contents, but

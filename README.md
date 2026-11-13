@@ -41,7 +41,8 @@ search while it is showing a code.
   "Drop to send to …" strip appears at that edge; drop the file on it and it is copied over (on Ubuntu the mouse then
   carries on onto the other computer). While Ubuntu controls the laptop, the laptop's strip appears on the side facing
   Ubuntu, so you drag files back the same way. You can also drop files on the SmoothKvm window, or use
-  `SmoothKvm send <files or folders> [--to <name>]`. Files land in `Downloads/SmoothKvm` on the other computer, never
+  `SmoothKvm send <files or folders> [--to <name>]`. Files land in `Downloads/SmoothKvm` on the other computer (choose
+  another folder under **Send files** → *Save files I receive in this folder*, or `files folder <path>`), never
   overwrite anything and are never opened.
 - **Move a screen** to another side after pairing: drag it in the Screens map (terminal: `move <name> <side>`).
 - **Effects** (Windows; colourful, drawn on screen, never move your mouse): Ripple, Glow, Sparks, Comet x Rainbow,

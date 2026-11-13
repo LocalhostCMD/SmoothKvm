@@ -224,6 +224,18 @@ mod tests {
     }
 
     #[test]
+    fn received_files_folder_must_be_a_full_path() {
+        let mut c = crate::Config::default();
+        assert!(c.validate().is_ok(), "empty = Downloads/SmoothKvm");
+        c.inbox_dir = "Desktop".into();
+        assert!(c.validate().is_err(), "relative paths are refused");
+        c.inbox_dir = if cfg!(windows) { r"C:\Users\me\Desktop".into() } else { "/home/me/Desktop".into() };
+        assert!(c.validate().is_ok());
+        c.inbox_dir.insert(3, '\u{7}');
+        assert!(c.validate().is_err(), "control characters are refused");
+    }
+
+    #[test]
     fn linear_bezier_is_identity() {
         let a = Animation { style: AnimationStyle::Custom, curve: [0.0, 0.0, 1.0, 1.0], ..Animation::default() };
         for i in 1..10 {
@@ -274,6 +286,8 @@ pub struct Config {
     pub drop_edge: Edge,
     /// Look for a new SmoothKvm release about once a day (it is only installed when you click Update).
     pub update_check: bool,
+    /// Where received files are saved (a full folder path). Empty = Downloads/SmoothKvm.
+    pub inbox_dir: String,
 }
 
 impl Default for Config {
@@ -289,6 +303,7 @@ impl Default for Config {
             file_drop: true,
             drop_edge: Edge::Right,
             update_check: true,
+            inbox_dir: String::new(),
         }
     }
 }
@@ -300,6 +315,10 @@ impl Config {
         }
         if self.remotes.len() > 4 {
             return Err("at most 4 screens (one per side)".into());
+        }
+        let d = self.inbox_dir.trim();
+        if !d.is_empty() && (d.len() > 1024 || d.chars().any(|c| c.is_control()) || !std::path::Path::new(d).is_absolute()) {
+            return Err("the folder for received files must be a full path, like C:\\Users\\me\\Desktop or /home/me/Desktop".into());
         }
         let mut edges = Vec::new();
         let mut names = Vec::new();

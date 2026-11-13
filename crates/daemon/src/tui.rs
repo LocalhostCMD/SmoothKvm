@@ -39,7 +39,7 @@ enum Msg {
 const SENDER_CMDS: &[(&str, &str)] = &[
     ("/clipboard", "/clipboard on|off   share copied text with paired computers"),
     ("/send", "/send <file or folder>... [to <screen>]   send files (\"quote paths\" with spaces)"),
-    ("/files", "/files on|off   accept files other computers send (saved in Downloads/SmoothKvm)"),
+    ("/files", "/files on|off   accept files from other computers;  /files folder <path>|default   where they are saved"),
     ("/log", "/log [alerts]   recent activity and security alerts"),
     ("/status", "show screens, connections and settings"),
     ("/screens", "list your screens"),
@@ -71,7 +71,7 @@ const SENDER_CMDS: &[(&str, &str)] = &[
 const RECEIVER_CMDS: &[(&str, &str)] = &[
     ("/clipboard", "/clipboard on|off   share copied text with paired computers"),
     ("/send", "/send <file or folder>... [to <screen>]   send files (\"quote paths\" with spaces)"),
-    ("/files", "/files on|off   accept files other computers send (saved in Downloads/SmoothKvm)"),
+    ("/files", "/files on|off   accept files from other computers;  /files folder <path>|default   where they are saved"),
     ("/screens", "list the screens this computer can control (switch with the Scroll Lock key)"),
     ("/add", "/add <name> <left|right|top|bottom> <host:port>   a screen to control from this computer"),
     ("/move", "/move <name> <left|right|top|bottom>   put a screen on another side"),
@@ -475,6 +475,23 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             }
             let r = c.post("/api/send", &json!({"paths": abs, "to": to}))?;
             Ok(vec![(Kind::Info, format!("Sending to {}... (progress on the left)", r["to"].as_str().unwrap_or("?")))])
+        }
+        ("/files", _) if a.first().map(|s| s.eq_ignore_ascii_case("folder")).unwrap_or(false) => {
+            let mut cfg = state_of(c)?["config"].clone();
+            let rest: Vec<String> = split_args(&a[1..].join(" "));
+            let dir = match rest.first().map(|s| s.as_str()) {
+                None => return Err("usage: /files folder <full path>   or   /files folder default".into()),
+                Some(d) if d.eq_ignore_ascii_case("default") => String::new(),
+                Some(d) => {
+                    let p = expand_home(d);
+                    std::fs::create_dir_all(&p).map_err(|e| format!("cannot use {p}: {e}"))?;
+                    std::fs::canonicalize(&p).map(|x| x.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(p)
+                }
+            };
+            cfg["inbox_dir"] = json!(dir);
+            set_config(c, &cfg)?;
+            let s = state_of(c)?;
+            Ok(vec![(Kind::Good, format!("Received files now go to {}", s["inbox"].as_str().unwrap_or("?")))])
         }
         ("/files", _) => {
             let s = state_of(c)?;

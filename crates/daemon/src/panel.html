@@ -157,7 +157,14 @@ button.dangerline{background:transparent;color:var(--bad);border:1px solid var(-
     <div><label>Drop strip appears on this side of the screen</label>
       <select id="dropedge"><option value="Right">Right</option><option value="Left">Left</option><option value="Top">Top</option><option value="Bottom">Bottom</option></select></div>
   </div>
-  <label class="check"><input id="filedrop" type="checkbox"> Accept files that my paired computers send me (saved to <span class="mono" id="inbox">Downloads\SmoothKvm</span>, never opened or run)</label>
+  <label class="check"><input id="filedrop" type="checkbox"> Accept files that my paired computers send me (never opened or run)</label>
+  <label>Save files I receive in this folder</label>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input id="inboxdir" type="text" autocomplete="off" spellcheck="false" style="flex:1;min-width:220px" placeholder="Downloads/SmoothKvm">
+    <button class="ghost" id="inboxpick">Choose…</button>
+    <button class="ghost" id="inboxreset" title="Back to Downloads/SmoothKvm">Default</button>
+  </div>
+  <div class="hint">Files go to <span class="mono" id="inbox">Downloads\SmoothKvm</span>. A file with the same name is never overwritten (the new one becomes "name (2)").</div>
   <div id="xfer" style="display:none;margin-top:10px">
     <div class="hint" id="xferhead"></div>
     <div style="height:8px;border-radius:4px;background:rgba(127,127,127,.25);overflow:hidden;margin:6px 0"><div id="xferbar" style="height:100%;width:0;background:#3b6df0;transition:width .3s"></div></div>
@@ -425,6 +432,16 @@ function bindSimple(){
   $('filedrop').onchange=e=>{ cfg.file_drop=e.target.checked; touch(); };
   $('dropedge').onchange=e=>{ cfg.drop_edge=e.target.value; touch(); };
   $('updauto').onchange=e=>{ cfg.update_check=e.target.checked; touch(); };
+  $('inboxdir').onchange=e=>{ cfg.inbox_dir=e.target.value.trim(); touch(); };
+  $('inboxreset').onclick=()=>{ cfg.inbox_dir=''; $('inboxdir').value=''; touch(); };
+  $('inboxpick').onclick=async()=>{
+    $('inboxpick').disabled=true;
+    try{
+      const r=await api('/api/pick-folder',{start: cfg.inbox_dir || (lastState && lastState.inbox) || ''});
+      if(r.path){ cfg.inbox_dir=r.path; $('inboxdir').value=r.path; await flushSave(); touch(); }
+    }catch(e){ say(e.message,false); $('inboxdir').focus(); }
+    $('inboxpick').disabled=false;
+  };
   $('allow').onclick=()=>openWizard('host');
   $('addpc').onclick=()=>openWizard();
   $('esc').onchange=e=>{ cfg.escape_hid=+e.target.value; touch(); };
@@ -439,6 +456,7 @@ function fillSimple(){
   $('filedrop').checked=cfg.file_drop!==false;
   $('dropedge').value=cfg.drop_edge||'Right';
   $('updauto').checked=cfg.update_check!==false;
+  $('inboxdir').value=cfg.inbox_dir||'';
   if(!a.curve) a.curve=[0.34,1.56,0.64,1];
   [0,1,2,3].forEach(i=>$('c'+i).value=a.curve[i]);
   $('customrow').style.display = a.style==='Custom' ? 'block' : 'none';
