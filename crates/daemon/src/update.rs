@@ -468,6 +468,8 @@ pub fn uninstall(wipe: bool) -> Result<String, String> {
             let _ = std::fs::remove_dir_all(&cfg_dir);
         }
         crate::shared::warn("Uninstalling SmoothKvm");
+        #[cfg(target_os = "linux")]
+        crate::edge_linux::unload();
         let nonce = ask_helper("uninstall")?;
         for _ in 0..240 {
             std::thread::sleep(Duration::from_millis(500));

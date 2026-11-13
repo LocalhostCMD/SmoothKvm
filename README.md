@@ -85,10 +85,12 @@ activity and security log (also `/log` in the terminal). See SECURITY.md.
 
 ## Controlling from Ubuntu
 The Ubuntu machine can control your other computers too (the app is the same on every device): pair as above, then
-press **Scroll Lock** to jump to the next connected screen, again to cycle, and finally back to this computer. Three
-quick presses = emergency stop. (Wayland does not let apps see the mouse position, so Ubuntu switches with a key
-instead of by pushing the mouse to an edge.) While another screen is active, this computer's keyboard and mouse are
-handed to it and a notification tells you who has control.
+**push the mouse off the side of the screen** where the other computer is, and push it back past that computer's
+edge to return. This works on KDE Plasma: Wayland does not let normal apps see the pointer, so SmoothKvm loads a
+tiny KWin script that only reports when the pointer touches a screen edge. **Scroll Lock** also switches (next
+screen, again to cycle, finally back), on any desktop. Three quick presses = emergency stop. While another screen is
+active, this computer's keyboard and mouse are handed to it and a notification tells you who has control. (Holding a
+mouse button while crossing, to drag files or windows over, is coming next.)
 
 ## Clipboard sharing
 `/clipboard on` (or the checkbox in the app) on both computers. Plain text only, up to 32 KB, only what you copy

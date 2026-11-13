@@ -65,6 +65,10 @@ mod inject_win;
 mod capture_linux;
 #[cfg(target_os = "linux")]
 mod inject_linux;
+#[cfg(target_os = "linux")]
+mod dbus_min;
+#[cfg(target_os = "linux")]
+mod edge_linux;
 #[cfg(unix)]
 mod linux_app;
 #[cfg(windows)]
@@ -167,6 +171,12 @@ fn handle_session(stream: TcpStream, ident: &Identity) -> io::Result<()> {
             if pin.is_some() && e.kind() == io::ErrorKind::PermissionDenied {
                 shared::burn_pairing();
                 shared::alert(&format!("Pairing attempt from {peer} FAILED (wrong PIN). The PIN was destroyed; open pairing again if that was you."));
+            } else if e.to_string().contains("unknown connection mode") {
+                // Not SmoothKvm at all. Usually another keyboard-sharing app that uses the same port.
+                shared::warn(&format!(
+                    "Ignored a connection from {peer} that is not SmoothKvm. Deskflow, Synergy, Barrier and Input Leap use the same port ({}); stop them or give them another port.",
+                    store::load_config().port
+                ));
             } else {
                 shared::alert(&format!("Connection from {peer} was rejected during the secure handshake: {e}"));
             }

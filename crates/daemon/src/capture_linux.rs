@@ -2,12 +2,14 @@
 //! and while a remote screen is selected it "grabs" them (so this computer stops seeing them) and forwards
 //! everything over the encrypted connection.
 //!
-//! Wayland (KDE) does not let programs see the pointer position, so switching is done with a hotkey
-//! (Scroll Lock by default, the same key that returns control on Windows): press it to jump to the next
-//! connected screen, press again to cycle, and finally to come back here. Three quick presses = emergency stop.
+//! Switching: push the pointer off the side of the screen where another computer is (on KDE a tiny KWin
+//! script tells us when the pointer touches an edge, see edge_linux.rs, because Wayland does not let normal
+//! programs see the pointer), and push it back past that computer's opposite edge to return. The hotkey
+//! (Scroll Lock by default) also works: next connected screen, again to cycle, finally back here.
+//! Three quick presses = emergency stop.
 //! Needs read access to /dev/input/event* (the package adds the service user to the `input` group).
 use crate::shared;
-use kvm_protocol::{Config, InputEvent, Message, MouseButton};
+use kvm_protocol::{Config, Edge, InputEvent, Message, MouseButton};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{self, Read};
@@ -39,6 +41,14 @@ struct State {
     held: HashSet<u16>,
     buttons: HashSet<u8>,
     presses: Vec<Instant>,
+    /// Where the pointer is on the active remote screen (in its pixels), to notice crossing back.
+    vx: i32,
+    vy: i32,
+    /// The pointer has left the screen edge since we last came back (so it doesn't bounce straight over again).
+    armed: bool,
+    /// Mouse buttons held on THIS computer (tracked all the time, not only while controlling).
+    local_buttons: HashSet<u8>,
+    last_blocked_note: Option<Instant>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -96,13 +106,94 @@ fn leave(st: &mut State) {
     }
 }
 
-fn enter(st: &mut State, i: usize) {
-    let edge = st.cfg.remotes.get(i).map(|r| r.edge).unwrap_or(kvm_protocol::Edge::Right);
-    let name = st.cfg.remotes.get(i).map(|r| r.name.clone()).unwrap_or_default();
+/// Take over screen `i`, with the pointer appearing at `frac` (0..1) along the edge it borders this one.
+fn enter(st: &mut State, i: usize, frac: f32) {
+    let Some(r) = st.cfg.remotes.get(i).cloned() else { return };
+    let (rw, rh) = (r.width.max(1) as i32, r.height.max(1) as i32);
+    let frac = frac.clamp(0.0, 1.0);
+    // Where it appears on the other screen, and how to get it there with relative moves only:
+    // slam into a corner first (the other computer clamps it), then move along the edge.
+    let (vx, vy, snap, follow) = match r.edge {
+        Edge::Right => (0, (frac * rh as f32) as i32, (-20000, -20000), (0, (frac * rh as f32) as i32)),
+        Edge::Left => (rw - 1, (frac * rh as f32) as i32, (20000, -20000), (0, (frac * rh as f32) as i32)),
+        Edge::Top => ((frac * rw as f32) as i32, rh - 1, (-20000, 20000), ((frac * rw as f32) as i32, 0)),
+        Edge::Bottom => ((frac * rw as f32) as i32, 0, (-20000, -20000), ((frac * rw as f32) as i32, 0)),
+    };
     st.active = Some(i);
-    st.send(Message::Enter { edge, pos: 0.5 });
+    st.vx = vx.clamp(0, rw - 1);
+    st.vy = vy.clamp(0, rh - 1);
+    st.send(Message::Enter { edge: r.edge, pos: frac });
+    st.send(Message::Input(InputEvent::MouseMoveRel { dx: snap.0, dy: snap.1 }));
+    st.send(Message::Input(InputEvent::MouseMoveRel { dx: follow.0, dy: follow.1 }));
     WANT_GRAB.store(true, Ordering::SeqCst);
-    notify(&format!("Controlling {name}"));
+    notify(&format!("Controlling {}", r.name));
+}
+
+/// The pointer touched `side` of this computer's screen (reported by KWin), `frac` along that edge.
+pub fn edge_hit(side: Edge, frac: f32) {
+    let Ok(mut g) = STATE.lock() else { return };
+    let Some(st) = g.as_mut() else { return };
+    if st.paused || st.active.is_some() || !st.armed {
+        return;
+    }
+    let Some(i) = st.cfg.remotes.iter().enumerate().position(|(i, r)| r.enabled && r.edge == side && st.connected.get(i).copied().unwrap_or(false)) else {
+        return;
+    };
+    if !st.local_buttons.is_empty() {
+        // Carrying a drag (a file, a window) over to the other computer is not supported yet: crossing now
+        // would leave the drag hanging on this one.
+        let quiet = st.last_blocked_note.map(|t| t.elapsed() < Duration::from_secs(20)).unwrap_or(false);
+        if !quiet {
+            st.last_blocked_note = Some(Instant::now());
+            notify("Let go of the mouse button to move to the other computer");
+        }
+        return;
+    }
+    enter(st, i, frac);
+}
+
+/// The pointer is no longer on any edge of this screen.
+pub fn edge_away() {
+    if let Ok(mut g) = STATE.lock() {
+        if let Some(st) = g.as_mut() {
+            st.armed = true;
+        }
+    }
+}
+
+/// Pointer moved while controlling another screen: follow it there, and come back when it crosses
+/// back over the edge that borders this computer.
+fn move_remote(st: &mut State, dx: i32, dy: i32) {
+    let Some(r) = st.active.and_then(|i| st.cfg.remotes.get(i)).cloned() else { return };
+    st.send(Message::Input(InputEvent::MouseMoveRel { dx, dy }));
+    let (rw, rh) = (r.width.max(1) as i32, r.height.max(1) as i32);
+    st.vx = st.vx.saturating_add(dx);
+    st.vy = st.vy.saturating_add(dy);
+    let back = match r.edge {
+        Edge::Right => st.vx < 0,
+        Edge::Left => st.vx >= rw,
+        Edge::Top => st.vy >= rh,
+        Edge::Bottom => st.vy < 0,
+    };
+    if back && st.buttons.is_empty() {
+        leave(st);
+        st.armed = false;
+        // Nudge this computer's pointer off the edge so it is clearly back (and doesn't sit on the trigger).
+        let (nx, ny) = match r.edge {
+            Edge::Right => (-6, 0),
+            Edge::Left => (6, 0),
+            Edge::Top => (0, 6),
+            Edge::Bottom => (0, -6),
+        };
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            crate::inject_linux::inject(&InputEvent::MouseMoveRel { dx: nx, dy: ny });
+        });
+        notify("Back on this computer");
+    } else {
+        st.vx = st.vx.clamp(0, rw - 1);
+        st.vy = st.vy.clamp(0, rh - 1);
+    }
 }
 
 /// The hotkey: this PC -> first connected screen -> next one ... -> back to this PC.
@@ -116,7 +207,7 @@ fn toggle(st: &mut State) {
         leave(st);
     }
     match next {
-        Some(i) => enter(st, i),
+        Some(i) => enter(st, i, 0.5),
         None if from == 0 => notify("No connected screen to switch to"),
         None => notify("Back on this computer"),
     }
@@ -194,8 +285,14 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
         held: HashSet::new(),
         buttons: HashSet::new(),
         presses: vec![],
+        vx: 0,
+        vy: 0,
+        armed: true,
+        local_buttons: HashSet::new(),
+        last_blocked_note: None,
     });
     std::thread::spawn(scanner);
+    crate::edge_linux::start();
     Ok(Controller)
 }
 
@@ -347,7 +444,13 @@ fn handle(kind: u16, code: u16, value: i32, acc: (&mut i32, &mut i32, &mut i32, 
         },
         EV_SYN => {
             if *dx != 0 || *dy != 0 {
-                forward(InputEvent::MouseMoveRel { dx: *dx, dy: *dy });
+                if let Ok(mut g) = STATE.lock() {
+                    if let Some(st) = g.as_mut() {
+                        if st.active.is_some() {
+                            move_remote(st, *dx, *dy);
+                        }
+                    }
+                }
             }
             if *wx != 0 || *wy != 0 {
                 forward(InputEvent::Scroll { dx: *wx, dy: *wy });
@@ -373,6 +476,11 @@ fn handle(kind: u16, code: u16, value: i32, acc: (&mut i32, &mut i32, &mut i32, 
                                 st.buttons.remove(&b);
                             }
                             st.send(Message::Input(InputEvent::MouseButton { button: btn_msg(b), pressed }));
+                        } else if pressed {
+                            st.local_buttons.insert(b);
+                        }
+                        if !pressed {
+                            st.local_buttons.remove(&b);
                         }
                     }
                 }
@@ -445,7 +553,22 @@ mod tests {
             txs.push(t);
             rxs.push(r);
         }
-        let st = State { generation: 1, cfg, senders: txs, connected: vec![true; n], active: None, paused: false, held: HashSet::new(), buttons: HashSet::new(), presses: vec![] };
+        let st = State {
+            generation: 1,
+            cfg,
+            senders: txs,
+            connected: vec![true; n],
+            active: None,
+            paused: false,
+            held: HashSet::new(),
+            buttons: HashSet::new(),
+            presses: vec![],
+            vx: 0,
+            vy: 0,
+            armed: true,
+            local_buttons: HashSet::new(),
+            last_blocked_note: None,
+        };
         (st, rxs)
     }
 
@@ -462,8 +585,8 @@ mod tests {
         hotkey(&mut st, true);
         hotkey(&mut st, false);
         assert_eq!(st.active, None, "the only connected screen -> back to this computer");
-        assert!(matches!(rx[0].try_recv(), Ok(Message::ReleaseAll)));
-        assert!(matches!(rx[0].try_recv(), Ok(Message::Leave)));
+        let rest: Vec<_> = rx[0].try_iter().filter(|m| !matches!(m, Message::Input(InputEvent::MouseMoveRel { .. }))).collect();
+        assert!(matches!(rest.as_slice(), [Message::ReleaseAll, Message::Leave]));
         assert!(st.held.is_empty());
     }
 
@@ -482,6 +605,71 @@ mod tests {
         // while stopped the hotkey does nothing
         hotkey(&mut st, false);
         assert_eq!(st.active, None);
+    }
+
+    #[test]
+    fn edge_crossing_and_back() {
+        let (mut st, rx) = test_state(1);
+        st.cfg.remotes[0].edge = Edge::Right;
+        st.cfg.remotes[0].width = 1000;
+        st.cfg.remotes[0].height = 500;
+        enter(&mut st, 0, 0.4);
+        assert_eq!(st.active, Some(0));
+        assert_eq!((st.vx, st.vy), (0, 200), "appears at the left edge of the other screen, 40% down");
+        let msgs: Vec<_> = rx[0].try_iter().collect();
+        assert!(matches!(msgs[0], Message::Enter { edge: Edge::Right, .. }));
+        assert!(matches!(msgs[1], Message::Input(InputEvent::MouseMoveRel { dx: -20000, dy: -20000 })));
+        assert!(matches!(msgs[2], Message::Input(InputEvent::MouseMoveRel { dx: 0, dy: 200 })));
+        // moving around over there, including pushing against its far edge, keeps control there
+        move_remote(&mut st, 300, 0);
+        move_remote(&mut st, 5000, 0);
+        assert_eq!(st.vx, 999);
+        // holding a button over there: no return while dragging
+        st.buttons.insert(0);
+        move_remote(&mut st, -3000, 0);
+        assert_eq!(st.active, Some(0));
+        assert_eq!(st.vx, 0);
+        st.buttons.clear();
+        move_remote(&mut st, 5, 0);
+        move_remote(&mut st, -5, 0);
+        assert_eq!(st.active, Some(0), "at its left edge but not past it yet");
+        move_remote(&mut st, -1, 0);
+        assert_eq!(st.active, None, "crossed back over the shared edge");
+        assert!(!st.armed, "must leave the edge before it can cross again");
+    }
+
+    #[test]
+    fn edge_hit_only_where_a_connected_screen_is() {
+        let (st, _rx) = test_state(1);
+        *STATE.lock().unwrap() = Some(st);
+        let active = || STATE.lock().unwrap().as_ref().unwrap().active;
+        let set = |f: &dyn Fn(&mut State)| f(STATE.lock().unwrap().as_mut().unwrap());
+        set(&|s| s.cfg.remotes[0].edge = Edge::Left);
+        edge_hit(Edge::Right, 0.5);
+        assert_eq!(active(), None, "nothing on the right");
+        set(&|s| {
+            s.local_buttons.insert(0);
+        });
+        edge_hit(Edge::Left, 0.5);
+        assert_eq!(active(), None, "not while dragging something here");
+        set(&|s| s.local_buttons.clear());
+        set(&|s| s.connected[0] = false);
+        edge_hit(Edge::Left, 0.5);
+        assert_eq!(active(), None, "not to a disconnected screen");
+        set(&|s| s.connected[0] = true);
+        edge_hit(Edge::Left, 0.5);
+        assert_eq!(active(), Some(0));
+        set(&|s| {
+            leave(s);
+            s.armed = false;
+        });
+        edge_hit(Edge::Left, 0.5);
+        assert_eq!(active(), None, "just came back: wait until the pointer leaves the edge");
+        edge_away();
+        edge_hit(Edge::Left, 0.5);
+        assert_eq!(active(), Some(0));
+        *STATE.lock().unwrap() = None;
+        WANT_GRAB.store(false, Ordering::SeqCst);
     }
 
     #[test]
