@@ -57,7 +57,22 @@ pub enum Message {
     DisplayState { running: bool, detail: String },
     /// Emergency stop: release every key and mouse button you are holding down.
     ReleaseAll,
+    // ---- 0.8: everything below is new; only sent to peers that announced version >= 8 ----
+    /// Sent by a controller right after connecting: the port it listens on itself, so the screen can
+    /// open connections back to it (to send files or windows the other way).
+    Announce { port: u16, version: u16 },
+    /// First message of a file-transfer session: `count` files, `total` bytes in all.
+    SendFiles { count: u32, total: u64 },
+    /// One file follows as exactly `size` bytes of raw frames. `path` is relative and '/'-separated.
+    FileStart { path: String, size: u64 },
+    /// The sender has nothing more to send.
+    FilesEnd,
+    /// The receiver's verdict for the whole transfer.
+    FilesResult { ok: bool, detail: String },
 }
+
+/// Protocol version spoken by this build (in `Announce`).
+pub const PROTO_VERSION: u16 = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AnimationStyle {
@@ -253,11 +268,25 @@ pub struct Config {
     /// Share copied TEXT with paired computers while connected (off by default; never logged).
     pub clipboard: bool,
     pub animation: Animation,
+    /// Accept files that paired computers send (saved to Downloads/SmoothKvm, never opened or run).
+    pub file_drop: bool,
+    /// Windows: which side of this screen the "drop here to send" strip appears on.
+    pub drop_edge: Edge,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { port: 24800, remotes: vec![], escape_hid: 0x47, game_guard: true, receive: false, clipboard: false, animation: Animation::default() }
+        Self {
+            port: 24800,
+            remotes: vec![],
+            escape_hid: 0x47,
+            game_guard: true,
+            receive: false,
+            clipboard: false,
+            animation: Animation::default(),
+            file_drop: true,
+            drop_edge: Edge::Right,
+        }
     }
 }
 

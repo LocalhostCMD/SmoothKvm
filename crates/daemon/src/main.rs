@@ -18,6 +18,16 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+// Route console output through shared::console so it can be silenced while the terminal UI owns the screen.
+#[allow(unused_macros)]
+macro_rules! println {
+    ($($t:tt)*) => { $crate::shared::console(format_args!($($t)*), false) };
+}
+#[allow(unused_macros)]
+macro_rules! eprintln {
+    ($($t:tt)*) => { $crate::shared::console(format_args!($($t)*), true) };
+}
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 mod clip;
@@ -28,6 +38,7 @@ mod rctl;
 mod shared;
 mod store;
 mod tui;
+mod xfer;
 use store::Identity;
 
 #[cfg(unix)]
@@ -39,6 +50,8 @@ mod capture_win;
 mod daemon;
 #[cfg(windows)]
 mod dpapi;
+#[cfg(windows)]
+mod drop_win;
 #[cfg(windows)]
 mod fx_win;
 #[cfg(windows)]
@@ -168,15 +181,13 @@ fn handle_session(stream: TcpStream, ident: &Identity) -> io::Result<()> {
         shared::info(&format!("New device paired: {peer} (id {who})"));
     }
     drop(slot);
-    let id = shared::session_start(&peer);
-    shared::info(&format!("{peer} (id {who}) is now controlling this PC"));
-    let result = session_loop(conn, &peer);
+    let id = shared::session_start(&peer, ip);
+    let result = session_loop(conn, &peer, &who, id);
     shared::session_end(id);
-    shared::info(&format!("{peer} stopped controlling this PC"));
     result
 }
 
-fn session_loop(mut conn: secure::SecureConn, peer: &str) -> io::Result<()> {
+fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) -> io::Result<()> {
     println!("secure session with {peer}");
     // The sender pings every second; silence for 10s means it's gone.
     conn.set_timeouts(Some(Duration::from_secs(10)), Some(Duration::from_secs(5)))?;
@@ -207,8 +218,16 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str) -> io::Result<()> {
             conn.send(&Message::DisplayState { running, detail })?;
             return Ok(());
         }
-        other => apply_message(other, &mut held, &mut clip::ClipSync::new()),
+        Message::SendFiles { count, total } => {
+            return xfer::receive(conn, peer, count, total);
+        }
+        Message::Announce { port, .. } => shared::session_control(id, Some(port)),
+        other => {
+            shared::session_control(id, None);
+            apply_message(other, &mut held, &mut clip::ClipSync::new())
+        }
     }
+    shared::info(&format!("{peer} (id {who}) is now controlling this PC"));
     // Input session: read in this thread, and (when sharing is on) send our clipboard changes from another.
     let (mut rd, mut wr) = conn.split()?;
     let cs = Arc::new(std::sync::Mutex::new(clip::ClipSync::new()));
@@ -240,6 +259,7 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str) -> io::Result<()> {
     alive.store(false, Ordering::SeqCst);
     held.release_all();
     println!("session ended: {end}");
+    shared::info(&format!("{peer} stopped controlling this PC"));
     Ok(())
 }
 
@@ -360,9 +380,47 @@ fn view(addr_override: Option<String>) -> io::Result<()> {
     Ok(())
 }
 
+fn send_cmd(args: &[String]) -> io::Result<()> {
+    let mut to = None;
+    let mut paths = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--to" {
+            to = it.next().cloned();
+        } else {
+            let p = std::fs::canonicalize(a).map_err(|e| io::Error::new(e.kind(), format!("{a}: {e}")))?;
+            paths.push(p.to_string_lossy().trim_start_matches(r"\\?\").to_string());
+        }
+    }
+    if paths.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "usage: SmoothKvm send <file or folder>... [--to <screen>]"));
+    }
+    if !ctl::alive() {
+        return Err(io::Error::new(io::ErrorKind::NotConnected, "SmoothKvm is not running"));
+    }
+    let c = ctl::Client::new()?;
+    let err = |e: String| io::Error::new(io::ErrorKind::Other, e);
+    let r = c.post("/api/send", &serde_json::json!({"paths": paths, "to": to})).map_err(err)?;
+    println!("Sending to {}...", r["to"].as_str().unwrap_or("?"));
+    // follow the progress until it is done
+    loop {
+        std::thread::sleep(Duration::from_millis(300));
+        let s = c.get("/api/state").map_err(err)?;
+        let t = &s["transfer"];
+        if t["finished"].as_bool().unwrap_or(false) {
+            let detail = t["detail"].as_str().unwrap_or("");
+            if t["ok"].as_bool().unwrap_or(false) {
+                println!("Done: {detail}");
+                return Ok(());
+            }
+            return Err(err(detail.to_string()));
+        }
+    }
+}
+
 fn usage() {
     eprintln!(
-        "SmoothKvm {VERSION}\n  SmoothKvm                 interactive terminal UI (type /help)\n  Windows:  open | start | stop | status | install [--autostart] | uninstall\n  Linux:    service | listen [--pair] | display start [WxH]|stop|status\n  Both:     view <addr> | test <addr> [--pin PIN] | --version"
+        "SmoothKvm {VERSION}\n  SmoothKvm                 interactive terminal UI (type /help)\n  Windows:  open | start | stop | status | install [--autostart] | uninstall\n  Linux:    service | listen [--pair] | display start [WxH]|stop|status\n  Both:     send <files...> [--to <screen>] | view <addr> | test <addr> [--pin PIN] | --version"
     );
 }
 
@@ -411,6 +469,11 @@ fn main() -> io::Result<()> {
             }
         }
         Some("view") => view(pos.first().map(|s| s.to_string())),
+        // Send files to another computer through the running app: SmoothKvm send <files...> [--to <name>]
+        Some("send") => send_cmd(&args[1..]).or_else(|e| {
+            eprintln!("Could not send: {e}");
+            std::process::exit(1)
+        }),
         Some("test") => match pos.first() {
             Some(a) => test(a, args.iter().position(|x| x == "--pin").and_then(|i| args.get(i + 1)).map(String::as_str)),
             None => Err(io::Error::new(io::ErrorKind::InvalidInput, "usage: SmoothKvm test <addr> [--pin 12345678]")),
@@ -419,5 +482,69 @@ fn main() -> io::Result<()> {
             usage();
             Ok(())
         }
+    }
+}
+
+/// Linux: run the whole backend (receiver + controller) inside this process, for the terminal app.
+/// It exists only while the app is open; quitting the app stops everything.
+#[cfg(unix)]
+pub fn start_embedded() -> io::Result<()> {
+    shared::QUIET.store(true, Ordering::SeqCst);
+    let cfg = store::load_config();
+    let addr = format!("0.0.0.0:{}", cfg.port);
+    let (tx, rx) = std::sync::mpsc::channel::<io::Error>();
+    std::thread::spawn(move || {
+        if let Err(e) = serve(&addr, false, true) {
+            let _ = tx.send(e);
+        }
+    });
+    for _ in 0..50 {
+        if let Ok(e) = rx.try_recv() {
+            return Err(e);
+        }
+        if ctl::alive() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(io::Error::new(io::ErrorKind::TimedOut, "the backend did not start"))
+}
+
+/// Stop what start_embedded started: hand every key back, tell the other computers, then end.
+#[cfg(unix)]
+pub fn stop_embedded() {
+    #[cfg(target_os = "linux")]
+    {
+        capture_linux::Controller.emergency_stop();
+        release_everything();
+    }
+    shared::info("SmoothKvm closed: all connections stopped, all keys released");
+    std::thread::sleep(Duration::from_millis(250));
+}
+
+/// The keyboard/mouse devices need the `input` group. Right after installing, an open terminal does not
+/// have it yet, so restart this program through `sg input` (only when the user really is a member).
+#[cfg(target_os = "linux")]
+pub fn ensure_input_group() {
+    use std::os::unix::process::CommandExt;
+    if std::env::var_os("SMOOTHKVM_SG").is_some() {
+        return;
+    }
+    let Ok(groups) = std::fs::read_to_string("/etc/group") else { return };
+    let Some(line) = groups.lines().find(|l| l.starts_with("input:")) else { return };
+    let mut f = line.split(':');
+    let gid: u32 = f.nth(2).and_then(|g| g.parse().ok()).unwrap_or(u32::MAX);
+    let members = line.rsplit(':').next().unwrap_or("");
+    let me = unsafe { libc::getuid() };
+    let name = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_default();
+    let mut gs = [0 as libc::gid_t; 256];
+    let n = unsafe { libc::getgroups(256, gs.as_mut_ptr()) }.max(0) as usize;
+    if gs[..n].contains(&gid) || me == 0 || !members.split(',').any(|m| m == name) {
+        return;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let args: Vec<String> = std::env::args().skip(1).map(|a| format!("'{}'", a.replace('\'', ""))).collect();
+        let cmd = format!("'{}' {}", exe.display().to_string().replace('\'', ""), args.join(" "));
+        let _ = std::process::Command::new("sg").args(["input", "-c", &cmd]).env("SMOOTHKVM_SG", "1").exec();
     }
 }

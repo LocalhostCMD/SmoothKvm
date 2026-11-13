@@ -33,6 +33,7 @@ pub fn start_backend() -> io::Result<()> {
         std::thread::spawn(move || panel::serve(server, token, ident));
     }
     apply(&cfg, &ctl, &ident);
+    crate::drop_win::start(ident.clone());
     std::thread::spawn(move || {
         let mut seen = store::config_mtime();
         loop {
@@ -94,12 +95,22 @@ fn remote_thread(
         shared::set_status(&r.name, "connecting", "");
         let pin = shared::take_pair_request(&r.name);
         match net::connect(&r.addr, &ident, pin.as_deref(), &r.name) {
-            Ok(conn) => {
+            Ok(mut conn) => {
                 shared::set_status(&r.name, "connected", "");
                 shared::info(&format!("Connected to {} ({})", r.name, r.addr));
                 last_err.clear();
                 while rx.try_recv().is_ok() {}
                 ctl.set_connected(generation, idx, true);
+                // Tell the screen where we listen ourselves, so it can send files/windows back to us.
+                let cfg = store::load_config();
+                let listening = cfg!(unix) || cfg.receive;
+                if listening {
+                    if let Err(e) = conn.send(&Message::Announce { port: cfg.port, version: kvm_protocol::PROTO_VERSION }) {
+                        ctl.set_connected(generation, idx, false);
+                        shared::set_status(&r.name, "offline", &e.to_string());
+                        continue;
+                    }
+                }
                 let (mut rd, mut wr) = match conn.split() {
                     Ok(x) => x,
                     Err(e) => {

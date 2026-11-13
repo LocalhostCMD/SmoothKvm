@@ -117,6 +117,21 @@ button.stop{background:var(--bad);font-weight:600}
 </div>
 
 <div class="card">
+  <h2>Send files</h2>
+  <div class="hint">Drag files or folders onto this window, or start dragging anywhere and drop them on the strip that appears at the screen edge. They are copied over the encrypted connection to <span id="tgtnames">(no computer connected)</span>.</div>
+  <div class="row">
+    <div><label>Drop strip appears on this side of the screen</label>
+      <select id="dropedge"><option value="Right">Right</option><option value="Left">Left</option><option value="Top">Top</option><option value="Bottom">Bottom</option></select></div>
+  </div>
+  <label class="check"><input id="filedrop" type="checkbox"> Accept files that my paired computers send me (saved to <span class="mono" id="inbox">Downloads\SmoothKvm</span>, never opened or run)</label>
+  <div id="xfer" style="display:none;margin-top:10px">
+    <div class="hint" id="xferhead"></div>
+    <div style="height:8px;border-radius:4px;background:rgba(127,127,127,.25);overflow:hidden;margin:6px 0"><div id="xferbar" style="height:100%;width:0;background:#3b6df0;transition:width .3s"></div></div>
+    <div class="hint" id="xferline"></div>
+  </div>
+</div>
+
+<div class="card">
   <h2>Activity and security log <span class="badge" id="alertbadge" style="display:none"></span></h2>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     <select id="evfilter" style="width:auto"><option value="all">Everything</option><option value="warn">Warnings and alerts</option><option value="alert">Security alerts only</option></select>
@@ -291,6 +306,8 @@ function bindSimple(){
   $('guard').onchange=e=>{ cfg.game_guard=e.target.checked; touch(); };
   $('recv').onchange=e=>{ cfg.receive=e.target.checked; touch(); };
   $('clip').onchange=e=>{ cfg.clipboard=e.target.checked; touch(); };
+  $('filedrop').onchange=e=>{ cfg.file_drop=e.target.checked; touch(); };
+  $('dropedge').onchange=e=>{ cfg.drop_edge=e.target.value; touch(); };
   $('allow').onclick=async()=>{ try{ const r=await api('/api/pair/open',{secs:120}); say('Pairing open: type PIN '+r.pin+' on the other computer (valid '+r.secs+'s, one attempt)', true); }catch(e){ say(e.message,false); } };
   $('esc').onchange=e=>{ cfg.escape_hid=+e.target.value; touch(); };
   $('preview').onclick=async()=>{ try{ await api('/api/effect/test',{animation:cfg.animation}); }catch(e){ say(e.message,false); } };
@@ -301,6 +318,8 @@ function fillSimple(){
   $('aenter').checked=a.on_enter; $('aleave').checked=a.on_leave; $('guard').checked=cfg.game_guard; $('esc').value=String(cfg.escape_hid);
   $('recv').checked=!!cfg.receive;
   $('clip').checked=!!cfg.clipboard;
+  $('filedrop').checked=cfg.file_drop!==false;
+  $('dropedge').value=cfg.drop_edge||'Right';
   if(!a.curve) a.curve=[0.34,1.56,0.64,1];
   [0,1,2,3].forEach(i=>$('c'+i).value=a.curve[i]);
   $('customrow').style.display = a.style==='Custom' ? 'block' : 'none';
@@ -341,6 +360,19 @@ $('alertok').onclick=()=>{ $('alertbar').style.display='none'; };
 $('evfilter').onchange=renderEvents;
 $('evcopy').onclick=async()=>{ try{ await navigator.clipboard.writeText(evAll.map(e=>new Date(e.t*1000).toISOString()+' '+e.level.toUpperCase()+' '+e.text).join('\n')); say('Log copied',true);}catch(e){ say('Could not copy',false);} };
 async function loadAuto(){ try{ const r=await api('/api/autostart'); $('autostart').checked=!!r.on; $('autostart').onchange=async()=>{ try{ await api('/api/autostart',{on:$('autostart').checked}); say('Saved',true);}catch(e){ say(e.message,false); $('autostart').checked=!$('autostart').checked; } }; }catch(e){} }
+function human(b){ return b>=1e9?(b/1e9).toFixed(2)+' GB':b>=1e6?(b/1e6).toFixed(1)+' MB':b>=1e3?(b/1e3).toFixed(0)+' KB':b+' B'; }
+function renderXfer(s){
+  const t=s.transfer, tg=s.targets||[];
+  $('tgtnames').textContent = tg.length ? tg.map(x=>x.name).join(', ') : '(no computer connected right now)';
+  if(s.inbox) $('inbox').textContent=s.inbox;
+  if(!t){ $('xfer').style.display='none'; return; }
+  $('xfer').style.display='block';
+  const pct = t.total_bytes ? Math.min(100, 100*t.done_bytes/t.total_bytes) : 100;
+  $('xferhead').textContent = (t.dir==='send' ? 'Sending to ' : 'Receiving from ') + t.peer + ' - ' + t.files + ' file(s)';
+  $('xferbar').style.width = (t.finished ? 100 : pct) + '%';
+  $('xferbar').style.background = t.finished ? (t.ok ? '#2fa84f' : '#e03a2f') : '#3b6df0';
+  $('xferline').textContent = t.finished ? t.detail : (human(t.done_bytes)+' of '+human(t.total_bytes)+'  ·  '+human(t.rate)+'/s  ·  '+t.file);
+}
 function render(){ renderMap(); renderDetail(); }
 async function poll(){
   try{
@@ -350,6 +382,7 @@ async function poll(){
     { const n=(s.sessions||[]).length, o=s.pairing_open_secs||0;
       $('recvinfo').textContent = !(cfg&&cfg.receive) ? 'Off. Nothing is listening.' :
         'On. ' + (n ? n+' computer(s) controlling this PC right now. ' : 'No one is connected. ') + (o ? 'Pairing is OPEN for '+o+'s. PIN to type on the other computer: '+(s.pairing_pin||'?') : 'Pairing is closed.'); }
+    renderXfer(s);
     $('pausedbar').style.display = s.paused ? 'block' : 'none';
     $('estop').style.display = s.paused ? 'none' : '';
     if(cfg){ renderMap(); renderStatusLine(); }

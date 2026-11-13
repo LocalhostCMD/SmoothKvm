@@ -108,20 +108,43 @@ pub struct Session {
     pub secs: u64,
 }
 
-static SESSIONS: Mutex<Vec<(u64, String, u64)>> = Mutex::new(Vec::new());
+struct LiveSession {
+    id: u64,
+    peer: String,
+    started: u64,
+    ip: IpAddr,
+    /// The port the controller listens on itself (from its Announce), so we can connect back to it.
+    back_port: Option<u16>,
+    /// Only input sessions (not file transfers or display tunnels) count as "controlling this PC".
+    control: bool,
+}
+
+static SESSIONS: Mutex<Vec<LiveSession>> = Mutex::new(Vec::new());
 static SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
-pub fn session_start(peer: &str) -> u64 {
+pub fn session_start(peer: &str, ip: IpAddr) -> u64 {
     let id = SESSION_ID.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut s) = SESSIONS.lock() {
-        s.push((id, clean(peer), now_secs()));
+        s.push(LiveSession { id, peer: clean(peer), started: now_secs(), ip, back_port: None, control: false });
     }
     id
 }
 
+/// The session turned out to be a keyboard/mouse session; `back_port` is where its controller listens.
+pub fn session_control(id: u64, back_port: Option<u16>) {
+    if let Ok(mut s) = SESSIONS.lock() {
+        if let Some(x) = s.iter_mut().find(|x| x.id == id) {
+            x.control = true;
+            if back_port.is_some() {
+                x.back_port = back_port;
+            }
+        }
+    }
+}
+
 pub fn session_end(id: u64) {
     if let Ok(mut s) = SESSIONS.lock() {
-        s.retain(|x| x.0 != id);
+        s.retain(|x| x.id != id);
     }
 }
 
@@ -129,8 +152,43 @@ pub fn sessions() -> Vec<Session> {
     let now = now_secs();
     SESSIONS
         .lock()
-        .map(|s| s.iter().map(|(_, p, t)| Session { peer: p.clone(), secs: now.saturating_sub(*t) }).collect())
+        .map(|s| s.iter().filter(|x| x.control).map(|x| Session { peer: x.peer.clone(), secs: now.saturating_sub(x.started) }).collect())
         .unwrap_or_default()
+}
+
+/// Computers controlling this one that told us where to reach them: (label, "ip:port").
+pub fn controllers() -> Vec<(String, String)> {
+    SESSIONS
+        .lock()
+        .map(|s| {
+            s.iter()
+                .filter(|x| x.control)
+                .filter_map(|x| x.back_port.map(|p| (x.peer.clone(), std::net::SocketAddr::new(x.ip, p).to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Desktop notification (Linux: notify-send; Windows: the activity log, shown in the app).
+pub fn notify(text: &str) {
+    info(text);
+    #[cfg(target_os = "linux")]
+    {
+        let uid = unsafe { libc::getuid() };
+        let run = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{uid}"));
+        if let Ok(mut c) = std::process::Command::new("notify-send")
+            .args(["-a", "SmoothKvm", "-t", "4000", "SmoothKvm", text])
+            .env("XDG_RUNTIME_DIR", &run)
+            .env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={run}/bus"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            std::thread::spawn(move || {
+                let _ = c.wait();
+            });
+        }
+    }
 }
 
 // ---- abuse limits for connections that have not authenticated yet ----
@@ -238,4 +296,20 @@ pub fn events(after: u64) -> Vec<Event> {
 
 pub fn alert_count() -> usize {
     EVENTS.lock().map(|g| g.iter().filter(|e| e.level == "alert").count()).unwrap_or(0)
+}
+
+// ---- console output ----
+// When the terminal app runs the backend inside itself, anything printed would scribble over its screen,
+// so printing is switched off then (everything important is in the activity log instead).
+pub static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn console(args: std::fmt::Arguments, err: bool) {
+    if QUIET.load(Ordering::Relaxed) {
+        return;
+    }
+    if err {
+        std::eprintln!("{args}");
+    } else {
+        std::println!("{args}");
+    }
 }

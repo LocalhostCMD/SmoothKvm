@@ -38,6 +38,8 @@ enum Msg {
 
 const SENDER_CMDS: &[(&str, &str)] = &[
     ("/clipboard", "/clipboard on|off   share copied text with paired computers"),
+    ("/send", "/send <file or folder>... [to <screen>]   send files (\"quote paths\" with spaces)"),
+    ("/files", "/files on|off   accept files other computers send (saved in Downloads/SmoothKvm)"),
     ("/log", "/log [alerts]   recent activity and security alerts"),
     ("/status", "show screens, connections and settings"),
     ("/screens", "list your screens"),
@@ -65,6 +67,8 @@ const SENDER_CMDS: &[(&str, &str)] = &[
 
 const RECEIVER_CMDS: &[(&str, &str)] = &[
     ("/clipboard", "/clipboard on|off   share copied text with paired computers"),
+    ("/send", "/send <file or folder>... [to <screen>]   send files (\"quote paths\" with spaces)"),
+    ("/files", "/files on|off   accept files other computers send (saved in Downloads/SmoothKvm)"),
     ("/screens", "list the screens this computer can control (switch with the Scroll Lock key)"),
     ("/add", "/add <name> <left|right|top|bottom> <host:port>   a screen to control from this computer"),
     ("/remove", "/remove <name>"),
@@ -160,6 +164,45 @@ fn peer_lines(s: &Value) -> Out {
 
 fn set_config(c: &Client, cfg: &Value) -> Result<(), String> {
     c.post("/api/config", cfg).map(|_| ())
+}
+
+/// Split a command line into words, keeping "quoted parts" (or 'single') together.
+fn split_args(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut any = false;
+    for ch in s.chars() {
+        match (quote, ch) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => cur.push(c),
+            (None, '"' | '\'') => {
+                quote = Some(ch);
+                any = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if any || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                any = false;
+            }
+            (None, c) => cur.push(c),
+        }
+    }
+    if any || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn expand_home(p: &str) -> String {
+    match p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")) {
+        Some(rest) => {
+            let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
+            format!("{home}/{rest}")
+        }
+        None => p.to_string(),
+    }
 }
 
 /// Run one slash command against the control API.
@@ -356,6 +399,40 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             cfg["game_guard"] = json!(on);
             set_config(c, &cfg)?;
             Ok(vec![(Kind::Good, format!("Game mode {}.", if on { "on - no screen switching during full-screen apps" } else { "off" }))])
+        }
+        ("/send", _) => {
+            let args = split_args(line.splitn(2, char::is_whitespace).nth(1).unwrap_or(""));
+            let (paths, to) = match args.iter().rposition(|a| a.eq_ignore_ascii_case("to")) {
+                Some(i) if i + 1 < args.len() && i > 0 => (args[..i].to_vec(), Some(args[i + 1..].join(" "))),
+                _ => (args.clone(), None),
+            };
+            if paths.is_empty() {
+                return Err("usage: /send <file or folder>... [to <screen>]".into());
+            }
+            // the app runs in another folder: send absolute paths
+            let mut abs = Vec::new();
+            for p in &paths {
+                let p = expand_home(p);
+                abs.push(std::fs::canonicalize(&p).map_err(|e| format!("{p}: {e}"))?.to_string_lossy().trim_start_matches(r"\\?\").to_string());
+            }
+            let r = c.post("/api/send", &json!({"paths": abs, "to": to}))?;
+            Ok(vec![(Kind::Info, format!("Sending to {}... (progress on the left)", r["to"].as_str().unwrap_or("?")))])
+        }
+        ("/files", _) => {
+            let s = state_of(c)?;
+            let on = match a.first().map(|s| s.to_lowercase()).as_deref() {
+                Some("on") => true,
+                Some("off") => false,
+                None => {
+                    let on = s["config"]["file_drop"].as_bool().unwrap_or(true);
+                    return Ok(vec![(Kind::Info, format!("Receiving files is {}. Files go to {}", if on { "ON" } else { "off" }, s["inbox"].as_str().unwrap_or("?")))]);
+                }
+                _ => return Err("usage: /files on|off".into()),
+            };
+            let mut cfg = s["config"].clone();
+            cfg["file_drop"] = json!(on);
+            set_config(c, &cfg)?;
+            Ok(vec![(Kind::Good, format!("Receiving files is {}.", if on { "ON" } else { "off" })), (Kind::Dim, format!("Received files go to {} and are never opened or run.", s["inbox"].as_str().unwrap_or("?")))])
         }
         ("/clipboard", _) => {
             let on = match a.first().map(|s| s.to_lowercase()).as_deref() {
@@ -676,6 +753,36 @@ fn pin_chip(pin: &str) -> Span<'static> {
     Span::styled(format!(" {pin} "), Style::new().fg(Color::Black).bg(WARN).add_modifier(Modifier::BOLD))
 }
 
+fn transfer_lines(s: &Value) -> Vec<Line<'static>> {
+    let t = &s["transfer"];
+    if t.is_null() {
+        return vec![];
+    }
+    let (done, total) = (t["done_bytes"].as_u64().unwrap_or(0), t["total_bytes"].as_u64().unwrap_or(0).max(1));
+    let pct = (done as f64 / total as f64 * 100.0).min(100.0);
+    let dir = if t["dir"] == "send" { "→" } else { "←" };
+    let mut out = vec![heading(&format!("FILES {dir} {}", t["peer"].as_str().unwrap_or("?")))];
+    if t["finished"].as_bool().unwrap_or(false) {
+        let ok = t["ok"].as_bool().unwrap_or(false);
+        out.push(Line::styled(format!("  {}", t["detail"].as_str().unwrap_or("")), Style::new().fg(if ok { GOOD } else { BAD })));
+    } else {
+        let w = 20usize;
+        let fill = (pct / 100.0 * w as f64) as usize;
+        out.push(Line::from(vec![
+            Span::styled(format!("  {}", "█".repeat(fill)), Style::new().fg(ACCENT)),
+            Span::styled("░".repeat(w - fill), Style::new().fg(DIM)),
+            Span::raw(format!(" {pct:.0}%")),
+        ]));
+        out.push(Line::styled(
+            format!("  {} / {}  {}/s", crate::xfer::human(done), crate::xfer::human(total), crate::xfer::human(t["rate"].as_u64().unwrap_or(0))),
+            Style::new().fg(DIM),
+        ));
+        out.push(Line::styled(format!("  {}", t["file"].as_str().unwrap_or("").chars().rev().take(34).collect::<Vec<_>>().into_iter().rev().collect::<String>()), Style::new().fg(DIM)));
+    }
+    out.push(Line::raw(""));
+    out
+}
+
 fn left_lines(app: &App) -> Vec<Line<'static>> {
     let mut out: Vec<Line> = Vec::new();
     let Some(s) = app.state.as_ref().filter(|_| !app.offline) else {
@@ -683,6 +790,7 @@ fn left_lines(app: &App) -> Vec<Line<'static>> {
         return out;
     };
     let peers = s["peers"].as_array().map(|a| a.len()).unwrap_or(0);
+    out.extend(transfer_lines(s));
     if s["mode"] == "receiver" {
         out.push(heading("CONNECTIONS"));
         let sessions = s["sessions"].as_array().cloned().unwrap_or_default();
@@ -862,7 +970,7 @@ fn draw(f: &mut Frame, app: &App) {
     );
 }
 
-fn app_loop(term: &mut DefaultTerminal, client: Client) -> io::Result<()> {
+fn app_loop(term: &mut DefaultTerminal, client: Client, embedded: bool) -> io::Result<()> {
     let (tx, rx): (Sender<Msg>, Receiver<Msg>) = channel();
     {
         let (c, tx) = (client.clone(), tx.clone());
@@ -874,7 +982,19 @@ fn app_loop(term: &mut DefaultTerminal, client: Client) -> io::Result<()> {
         });
     }
     let mut app = App { input: String::new(), history: vec![], hist: None, log: vec![], state: None, offline: true, tx, client, quit: false, scroll: 0, busy: 0, started: Instant::now() };
+    app.say(
+        Kind::Dim,
+        if embedded {
+            "SmoothKvm runs only while this window is open. Closing it (or /quit) stops everything."
+        } else {
+            "Connected to the SmoothKvm background service. Closing this window leaves it running; stop it with:  sudo systemctl stop smoothkvm"
+        },
+    );
     while !app.quit {
+        #[cfg(unix)]
+        if HANGUP.load(std::sync::atomic::Ordering::SeqCst) {
+            app.quit = true;
+        }
         term.draw(|f| draw(f, &app))?;
         while let Ok(m) = rx.try_recv() {
             app.apply(m);
@@ -888,19 +1008,55 @@ fn app_loop(term: &mut DefaultTerminal, client: Client) -> io::Result<()> {
     Ok(())
 }
 
+/// Set by SIGHUP/SIGTERM (terminal window closed): the app quits instead of lingering invisibly.
+#[cfg(unix)]
+pub static HANGUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn on_hangup(_: libc::c_int) {
+    HANGUP.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn run() -> io::Result<()> {
+    let mut embedded = false;
     if !ctl::alive() {
         #[cfg(windows)]
         {
             eprintln!("Starting SmoothKvm...");
             let _ = crate::app::start(false);
         }
-        #[cfg(not(windows))]
-        eprintln!("The SmoothKvm service isn't running yet. Start it with:  sudo systemctl start smoothkvm");
+        #[cfg(unix)]
+        {
+            // No background service: run SmoothKvm inside this window. Closing it stops everything.
+            #[cfg(target_os = "linux")]
+            crate::ensure_input_group();
+            unsafe {
+                libc::signal(libc::SIGHUP, on_hangup as usize);
+                libc::signal(libc::SIGTERM, on_hangup as usize);
+            }
+            crate::start_embedded()?;
+            embedded = true;
+        }
     }
     let client = Client::new()?;
     let mut term = ratatui::try_init()?;
-    let res = app_loop(&mut term, client);
+    let res = app_loop(&mut term, client, embedded);
     ratatui::restore();
+    #[cfg(unix)]
+    if embedded {
+        crate::stop_embedded();
+    }
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_args;
+
+    #[test]
+    fn quoted_paths_stay_together() {
+        assert_eq!(split_args(r#"a "b c" 'd e' f"#), vec!["a", "b c", "d e", "f"]);
+        assert_eq!(split_args(r#""C:\My Files\x.step" to Ubuntu"#), vec![r"C:\My Files\x.step", "to", "Ubuntu"]);
+        assert_eq!(split_args("  "), Vec::<String>::new());
+    }
 }

@@ -77,6 +77,9 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                     "pairing_pin": shared::pairing_pin(),
                     "game_active": capture_win::game_active_now(),
                     "paused": capture_win::is_paused(),
+                    "transfer": crate::xfer::progress(),
+                    "targets": crate::xfer::targets(),
+                    "inbox": crate::xfer::inbox(),
                     "sessions": shared::sessions(),
                     "pairing_open_secs": shared::pairing_remaining(),
                     "peers": peers,
@@ -192,6 +195,22 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 std::process::exit(0);
             });
+        }
+        // Send local files/folders to another computer (runs in the background; progress is in /api/state).
+        ("/api/send", Method::Post) => {
+            let paths: Vec<std::path::PathBuf> = data
+                .get("paths")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|p| p.as_str()).map(std::path::PathBuf::from).collect())
+                .unwrap_or_default();
+            if paths.is_empty() {
+                return json_reply(req, 400, json!({"error": "no files given"}));
+            }
+            let to = data.get("to").and_then(|v| v.as_str()).map(String::from);
+            match crate::xfer::send_async(to, paths, ident.clone()) {
+                Ok(t) => json_reply(req, 200, json!({"to": t.name})),
+                Err(e) => json_reply(req, 400, json!({"error": e.to_string()})),
+            }
         }
         _ => json_reply(req, 404, json!({"error": "not found"})),
     }

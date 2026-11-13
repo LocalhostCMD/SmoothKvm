@@ -79,6 +79,21 @@ fn open_window(target: &tao::event_loop::EventLoopWindowTarget<UserEvent>, ctx: 
         // The window only ever shows the local panel.
         .with_navigation_handler(|u| u.starts_with(&format!("http://127.0.0.1:{}", crate::httpd::port())))
         .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
+        // Files dropped on the window are sent to the other computer (never opened in the webview).
+        .with_drag_drop_handler(|e| {
+            if let wry::DragDropEvent::Drop { paths, .. } = e {
+                if !paths.is_empty() {
+                    match store::Identity::load_or_create().map(std::sync::Arc::new) {
+                        Ok(ident) => match crate::xfer::send_async(None, paths, ident) {
+                            Ok(t) => crate::shared::info(&format!("Sending dropped files to {}", t.name)),
+                            Err(e) => crate::shared::warn(&format!("Could not send the dropped files: {e}")),
+                        },
+                        Err(e) => crate::shared::warn(&format!("Could not send the dropped files: {e}")),
+                    }
+                }
+            }
+            true
+        })
         .build(&window)
         .map_err(|e| err(e.to_string()))?;
     Ok((window, webview))

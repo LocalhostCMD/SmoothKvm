@@ -2,7 +2,7 @@
 Type=Application
 Name=SmoothKvm
 Comment=One keyboard and mouse across all your computers
-Exec=x-terminal-emulator -e SmoothKvm
+Exec=SmoothKvm
 Icon=smoothkvm
-Terminal=false
+Terminal=true
 Categories=Utility;System;
