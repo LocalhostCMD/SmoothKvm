@@ -384,7 +384,7 @@ mod tests {
             let ident = Arc::new(Identity { private: vec![1; 32], public: vec![2; 32] });
             run(x2, d2, rx, ident);
         });
-        tx.send(Cmd::Show { edge: Edge::Right, frac: 0.5, name: "Nowhere".into(), idx: 0 }).unwrap();
+        tx.send(Cmd::Show { edge: Edge::Right, frac: 0.5, name: "Nowhere".into(), idx: 99 }).unwrap();
         std::thread::sleep(Duration::from_millis(500));
         // find the strip window by name, act as the drag source
         let a = |n: &str| Strip::atom(&x, dpy, n);

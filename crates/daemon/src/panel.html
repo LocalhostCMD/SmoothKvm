@@ -140,6 +140,11 @@ button.dangerline{background:transparent;color:var(--bad);border:1px solid var(-
     <div><label>Key that sends control back to this PC</label>
       <select id="esc"><option value="71">Scroll Lock</option><option value="69">F12</option><option value="73">Insert</option><option value="228">Right Ctrl</option></select></div>
   </div>
+  <div class="row">
+    <div><label>Rest on the edge this long before switching (ms)</label><input id="swdelay" type="number" min="0" max="2000" step="50"></div>
+    <div><label>Never switch this close to a corner (px)</label><input id="swcorner" type="number" min="0" max="400" step="10"></div>
+  </div>
+  <div class="hint">So you can still click close buttons, menus and the clock at the screen edges: corners never switch, and brushing past an edge doesn't either. Set both to 0 to switch the instant you touch an edge.</div>
 </div>
 
 <div class="card">
@@ -444,6 +449,8 @@ function bindSimple(){
   $('dropedge').onchange=e=>{ cfg.drop_edge=e.target.value; touch(); };
   $('updauto').onchange=e=>{ cfg.update_check=e.target.checked; touch(); };
   $('inboxdir').onchange=e=>{ cfg.inbox_dir=e.target.value.trim(); touch(); };
+  $('swdelay').oninput=e=>{ cfg.switch_delay_ms=Math.max(0,Math.min(2000,+e.target.value||0)); touch(); };
+  $('swcorner').oninput=e=>{ cfg.corner_px=Math.max(0,Math.min(400,+e.target.value||0)); touch(); };
   $('inboxreset').onclick=()=>{ cfg.inbox_dir=''; $('inboxdir').value=''; touch(); };
   $('inboxpick').onclick=async()=>{
     $('inboxpick').disabled=true;
@@ -468,6 +475,8 @@ function fillSimple(){
   $('dropedge').value=cfg.drop_edge||'Right';
   $('updauto').checked=cfg.update_check!==false;
   $('inboxdir').value=cfg.inbox_dir||'';
+  $('swdelay').value=cfg.switch_delay_ms ?? 150;
+  $('swcorner').value=cfg.corner_px ?? 60;
   if(!a.curve) a.curve=[0.34,1.56,0.64,1];
   [0,1,2,3].forEach(i=>$('c'+i).value=a.curve[i]);
   $('customrow').style.display = a.style==='Custom' ? 'block' : 'none';

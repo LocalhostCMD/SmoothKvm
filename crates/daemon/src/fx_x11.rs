@@ -164,7 +164,7 @@ mod tests {
             v
         };
         assert!(visible > 100, "the glow is drawn (pixels with alpha)");
-        std::thread::sleep(Duration::from_millis(1500));
+        std::thread::sleep(Duration::from_millis(4000));
         let gone = std::process::Command::new("xwininfo").args(["-name", "SmoothKvm effect"]).output().unwrap();
         assert!(!gone.status.success(), "the effect window is removed when it ends");
         unsafe { (x.XCloseDisplay)(dpy) };

@@ -261,6 +261,19 @@ mod tests {
     }
 
     #[test]
+    fn corners_are_left_alone() {
+        use crate::in_corner;
+        assert!(in_corner(0, 1080, 60));
+        assert!(in_corner(59, 1080, 60));
+        assert!(!in_corner(60, 1080, 60));
+        assert!(!in_corner(540, 1080, 60));
+        assert!(in_corner(1020, 1080, 60));
+        assert!(!in_corner(0, 1080, 0), "0 = corners switch too");
+        // a tiny edge keeps its middle third usable whatever the setting
+        assert!(!in_corner(50, 150, 400));
+    }
+
+    #[test]
     fn received_files_folder_must_be_a_full_path() {
         let mut c = crate::Config::default();
         assert!(c.validate().is_ok(), "empty = Downloads/SmoothKvm");
@@ -325,6 +338,12 @@ pub struct Config {
     pub update_check: bool,
     /// Where received files are saved (a full folder path). Empty = Downloads/SmoothKvm.
     pub inbox_dir: String,
+    /// The pointer must stay on (or keep pushing against) the edge this long before it switches screens,
+    /// so brushing past the edge never switches by accident.
+    pub switch_delay_ms: u32,
+    /// The ends of each edge (this many pixels from a corner) never switch: that is where close buttons,
+    /// menus and the clock are.
+    pub corner_px: u32,
 }
 
 impl Default for Config {
@@ -341,8 +360,16 @@ impl Default for Config {
             drop_edge: Edge::Right,
             update_check: true,
             inbox_dir: String::new(),
+            switch_delay_ms: 150,
+            corner_px: 60,
         }
     }
+}
+
+/// Is a point `along` an edge of length `len` inside one of its corner zones (where switching never happens)?
+pub fn in_corner(along: i64, len: i64, corner: u32) -> bool {
+    let c = (corner as i64).min(len / 3); // on a small screen keep the middle third usable
+    along < c || along >= len - c
 }
 
 impl Config {
@@ -352,6 +379,12 @@ impl Config {
         }
         if self.remotes.len() > 4 {
             return Err("at most 4 screens (one per side)".into());
+        }
+        if self.switch_delay_ms > 2000 {
+            return Err("the switch delay must be 0-2000 ms".into());
+        }
+        if self.corner_px > 400 {
+            return Err("the corner size must be 0-400 pixels".into());
         }
         let d = self.inbox_dir.trim();
         if !d.is_empty() && (d.len() > 1024 || d.chars().any(|c| c.is_control()) || !std::path::Path::new(d).is_absolute()) {

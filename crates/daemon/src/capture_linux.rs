@@ -51,6 +51,9 @@ struct State {
     last_blocked_note: Option<Instant>,
     /// The drop strip is showing (hidden again when the drag ends).
     strip_shown: bool,
+    /// A switch waiting for the delay to pass (cancelled when the pointer leaves the edge).
+    pending: Option<u64>,
+    pending_seq: u64,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -147,12 +150,20 @@ fn return_effect(st: &State) {
     crate::fx_x11::play_at_edge(st.cfg.animation, r.edge, frac);
 }
 
-/// The pointer touched `side` of this computer's screen (reported by KWin), `frac` along that edge.
-pub fn edge_hit(side: Edge, frac: f32) {
+/// The pointer touched `side` of this computer's screen (reported by KWin), `frac` along that edge;
+/// `px` = (pixels along the edge, edge length) when known.
+pub fn edge_hit(side: Edge, frac: f32, px: Option<(i64, i64)>) {
     let Ok(mut g) = STATE.lock() else { return };
     let Some(st) = g.as_mut() else { return };
+    st.pending = None;
     if st.paused || st.active.is_some() || !st.armed {
         return;
+    }
+    // the corners never switch (close buttons, menus, the clock live there)
+    if let Some((along, len)) = px {
+        if kvm_protocol::in_corner(along, len, st.cfg.corner_px) {
+            return;
+        }
     }
     let Some(i) = st.cfg.remotes.iter().enumerate().position(|(i, r)| r.enabled && r.edge == side && st.connected.get(i).copied().unwrap_or(false)) else {
         return;
@@ -173,7 +184,24 @@ pub fn edge_hit(side: Edge, frac: f32) {
         }
         return;
     }
-    enter(st, i, frac);
+    let delay = st.cfg.switch_delay_ms;
+    if delay == 0 {
+        enter(st, i, frac);
+        return;
+    }
+    // switch only if the pointer is still resting on that edge after the delay
+    st.pending_seq = st.pending_seq.wrapping_add(1);
+    let seq = st.pending_seq;
+    st.pending = Some(seq);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(delay as u64));
+        let Ok(mut g) = STATE.lock() else { return };
+        let Some(st) = g.as_mut() else { return };
+        if st.pending == Some(seq) && !st.paused && st.active.is_none() && st.local_buttons.is_empty() && st.connected.get(i).copied().unwrap_or(false) {
+            st.pending = None;
+            enter(st, i, frac);
+        }
+    });
 }
 
 /// Files were dropped on the strip for screen `idx`: carry on over there.
@@ -204,6 +232,7 @@ pub fn edge_away() {
     if let Ok(mut g) = STATE.lock() {
         if let Some(st) = g.as_mut() {
             st.armed = true;
+            st.pending = None; // moved off the edge before the delay ran out: no switch
         }
     }
 }
@@ -222,6 +251,12 @@ fn move_remote(st: &mut State, dx: i32, dy: i32) {
         Edge::Top => st.vy >= rh,
         Edge::Bottom => st.vy < 0,
     };
+    // the other screen's corners don't send you back either (its close buttons and menus are there)
+    let (along, len) = match r.edge {
+        Edge::Left | Edge::Right => (st.vy.clamp(0, rh - 1) as i64, rh as i64),
+        Edge::Top | Edge::Bottom => (st.vx.clamp(0, rw - 1) as i64, rw as i64),
+    };
+    let back = back && !kvm_protocol::in_corner(along, len, st.cfg.corner_px);
     if back && st.buttons.is_empty() {
         return_effect(st);
         leave(st);
@@ -342,6 +377,8 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
         local_buttons: HashSet::new(),
         last_blocked_note: None,
         strip_shown: false,
+        pending: None,
+        pending_seq: 0,
     });
     std::thread::spawn(scanner);
     crate::edge_linux::start();
@@ -627,6 +664,8 @@ mod tests {
             local_buttons: HashSet::new(),
             last_blocked_note: None,
             strip_shown: false,
+        pending: None,
+        pending_seq: 0,
         };
         (st, rxs)
     }
@@ -697,36 +736,88 @@ mod tests {
         assert!(!st.armed, "must leave the edge before it can cross again");
     }
 
+    // These tests share the global STATE, so they run one at a time.
+    static GLOBAL: Mutex<()> = Mutex::new(());
+
     #[test]
     fn edge_hit_only_where_a_connected_screen_is() {
-        let (st, _rx) = test_state(1);
+        let _one = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut st, _rx) = test_state(1);
+        st.cfg.switch_delay_ms = 0;
         *STATE.lock().unwrap() = Some(st);
         let active = || STATE.lock().unwrap().as_ref().unwrap().active;
         let set = |f: &dyn Fn(&mut State)| f(STATE.lock().unwrap().as_mut().unwrap());
+        let mid = Some((540, 1080));
         set(&|s| s.cfg.remotes[0].edge = Edge::Left);
-        edge_hit(Edge::Right, 0.5);
+        edge_hit(Edge::Right, 0.5, mid);
         assert_eq!(active(), None, "nothing on the right");
         set(&|s| {
             s.local_buttons.insert(0);
         });
-        edge_hit(Edge::Left, 0.5);
+        edge_hit(Edge::Left, 0.5, mid);
         assert_eq!(active(), None, "not while dragging something here");
         set(&|s| s.local_buttons.clear());
         set(&|s| s.connected[0] = false);
-        edge_hit(Edge::Left, 0.5);
+        edge_hit(Edge::Left, 0.5, mid);
         assert_eq!(active(), None, "not to a disconnected screen");
         set(&|s| s.connected[0] = true);
-        edge_hit(Edge::Left, 0.5);
+        edge_hit(Edge::Left, 0.5, mid);
         assert_eq!(active(), Some(0));
         set(&|s| {
             leave(s);
             s.armed = false;
         });
-        edge_hit(Edge::Left, 0.5);
+        edge_hit(Edge::Left, 0.5, mid);
         assert_eq!(active(), None, "just came back: wait until the pointer leaves the edge");
         edge_away();
-        edge_hit(Edge::Left, 0.5);
+        edge_hit(Edge::Left, 0.5, mid);
         assert_eq!(active(), Some(0));
+        *STATE.lock().unwrap() = None;
+        WANT_GRAB.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn corners_never_switch_and_the_delay_needs_the_pointer_to_stay() {
+        let _one = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut st, _rx) = test_state(1);
+        st.cfg.remotes[0].edge = Edge::Right;
+        st.cfg.switch_delay_ms = 500;
+        st.cfg.corner_px = 60;
+        *STATE.lock().unwrap() = Some(st);
+        let active = || STATE.lock().unwrap().as_ref().unwrap().active;
+        // the close button of a maximised window: top-right corner
+        edge_hit(Edge::Right, 0.01, Some((10, 1080)));
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(active(), None, "the top corner never switches");
+        edge_hit(Edge::Right, 0.99, Some((1075, 1080)));
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(active(), None, "nor the bottom corner");
+        // brushing past the edge: gone again before the delay
+        edge_hit(Edge::Right, 0.5, Some((540, 1080)));
+        std::thread::sleep(Duration::from_millis(40));
+        edge_away();
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(active(), None, "left the edge before the delay: no switch");
+        // resting on the middle of the edge: switches after the delay, not before
+        edge_hit(Edge::Right, 0.5, Some((540, 1080)));
+        std::thread::sleep(Duration::from_millis(40));
+        assert_eq!(active(), None, "not yet");
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(active(), Some(0), "switched after resting on the edge");
+        // on the other screen, its corners don't send you back
+        {
+            let mut g = STATE.lock().unwrap();
+            let s = g.as_mut().unwrap();
+            s.cfg.remotes[0].width = 1000;
+            s.cfg.remotes[0].height = 500;
+            s.vx = 0;
+            s.vy = 5; // its top-left corner
+            move_remote(s, -50, 0);
+            assert_eq!(s.active, Some(0), "the other screen's corner keeps you there");
+            s.vy = 250;
+            move_remote(s, -50, 0);
+            assert_eq!(s.active, None, "the middle of its edge brings you back");
+        }
         *STATE.lock().unwrap() = None;
         WANT_GRAB.store(false, Ordering::SeqCst);
     }

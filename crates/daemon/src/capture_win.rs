@@ -36,6 +36,9 @@ struct State {
     paused: bool,
     esc_presses: Vec<Instant>,
     esc_held: bool,
+    /// The pointer reached a switching edge (which screen, since when): it switches once it has stayed
+    /// (kept pushing) there for the switch delay.
+    edge_wait: Option<(usize, Instant)>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -113,6 +116,7 @@ fn screen_state(cfg: Config) -> State {
             paused: false,
             esc_presses: Vec::new(),
             esc_held: false,
+            edge_wait: None,
         }
     }
 }
@@ -188,14 +192,20 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
 
 // ---- switching logic -------------------------------------------------------
 
-fn edge_hit(b: (i32, i32, i32, i32), edge: Edge, p: POINT) -> bool {
+fn edge_hit(b: (i32, i32, i32, i32), edge: Edge, p: POINT, corner: u32) -> bool {
     let (l, t, r, bot) = b;
-    match edge {
+    let on = match edge {
         Edge::Right => p.x >= r - 1,
         Edge::Left => p.x <= l,
         Edge::Top => p.y <= t,
         Edge::Bottom => p.y >= bot - 1,
-    }
+    };
+    // the corners never switch (close buttons, the Start button, the clock live there)
+    let (along, len) = match edge {
+        Edge::Left | Edge::Right => ((p.y - t) as i64, (bot - t) as i64),
+        Edge::Top | Edge::Bottom => ((p.x - l) as i64, (r - l) as i64),
+    };
+    on && !kvm_protocol::in_corner(along, len, corner)
 }
 
 /// Which connected remote (if any) sits on the edge the cursor just touched.
@@ -207,7 +217,7 @@ fn find_target(st: &State, p: POINT) -> Option<usize> {
         .remotes
         .iter()
         .enumerate()
-        .find(|(i, r)| r.enabled && st.connected.get(*i) == Some(&true) && edge_hit(st.bounds, r.edge, p))
+        .find(|(i, r)| r.enabled && st.connected.get(*i) == Some(&true) && edge_hit(st.bounds, r.edge, p, st.cfg.corner_px))
         .map(|(i, _)| i)
 }
 
@@ -307,6 +317,12 @@ fn move_remote(st: &mut State, dx: i32, dy: i32) {
         Edge::Top => st.vy >= rh,
         Edge::Bottom => st.vy < 0,
     };
+    // the other screen's corners don't send you back either
+    let (along, len) = match r.edge {
+        Edge::Left | Edge::Right => (st.vy.clamp(0, rh - 1) as i64, rh as i64),
+        Edge::Top | Edge::Bottom => (st.vx.clamp(0, rw - 1) as i64, rw as i64),
+    };
+    let back = back && !kvm_protocol::in_corner(along, len, st.cfg.corner_px);
     if back {
         leave_remote(st);
     } else {
@@ -373,10 +389,26 @@ fn handle_mouse(msg: u32, info: &MSLLHOOKSTRUCT) -> bool {
                     // A full-screen app/game is running: stay on this PC.
                     Some(_) if game_blocks(st) => false,
                     Some(i) => {
-                        enter_remote(st, i, info.pt);
-                        true
+                        // switch once the pointer has stayed (kept pushing) on the edge for the delay
+                        let since = match st.edge_wait {
+                            Some((j, t)) if j == i => t,
+                            _ => {
+                                st.edge_wait = Some((i, Instant::now()));
+                                Instant::now()
+                            }
+                        };
+                        if since.elapsed() >= Duration::from_millis(st.cfg.switch_delay_ms as u64) {
+                            st.edge_wait = None;
+                            enter_remote(st, i, info.pt);
+                            true
+                        } else {
+                            false
+                        }
                     }
-                    None => false,
+                    None => {
+                        st.edge_wait = None;
+                        false
+                    }
                 }
             } else {
                 false
