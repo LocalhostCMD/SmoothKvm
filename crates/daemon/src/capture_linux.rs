@@ -204,6 +204,29 @@ pub fn edge_hit(side: Edge, frac: f32, px: Option<(i64, i64)>) {
     });
 }
 
+/// You are dragging files against the edge where screen `idx` is: carry the drag over. The pointer moves
+/// there with the left button still held (it now belongs to that computer, which picks the drag up), and
+/// the drag here is ended quietly. Returns false if it cannot switch right now.
+pub fn cross_with_drag(idx: usize, frac: f32, names: Vec<String>, drag: u32) -> bool {
+    let Ok(mut g) = STATE.lock() else { return false };
+    let Some(st) = g.as_mut() else { return false };
+    if st.paused || st.active.is_some() || !st.connected.get(idx).copied().unwrap_or(false) {
+        return false;
+    }
+    st.strip_shown = false;
+    st.local_buttons.clear();
+    enter(st, idx, frac);
+    st.send(Message::DragStart { drag, names });
+    // your finger is still on the button: its release now goes to the other computer (which drops there)
+    st.buttons.insert(0);
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(80));
+        // let go of the drag on this computer (it ends on the strip, which knows it went across)
+        crate::inject_linux::inject(&InputEvent::MouseButton { button: MouseButton::Left, pressed: false });
+    });
+    true
+}
+
 /// Files were dropped on the strip for screen `idx`: carry on over there.
 pub fn cross_after_drop(idx: usize, _side: Edge, frac: f32) {
     let Ok(mut g) = STATE.lock() else { return };

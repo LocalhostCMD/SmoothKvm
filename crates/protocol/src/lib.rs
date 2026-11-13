@@ -94,6 +94,12 @@ pub enum Message {
     WindowInput { id: u32, ev: WindowEvent },
     /// The app's window is gone (or streaming stopped).
     WindowClose { id: u32 },
+    // ---- 0.9.2: dragging files across ----
+    /// Sent by the controller right after `Enter`: you are carrying a drag of these top-level items over;
+    /// pick it up here (the files themselves come in a `DragFiles` session with the same `drag` id).
+    DragStart { drag: u32, names: Vec<String> },
+    /// First message of a file-transfer session whose files belong to drag `drag` (otherwise like `SendFiles`).
+    DragFiles { drag: u32, count: u32, total: u64 },
 }
 
 /// What the viewer sends back. Coordinates are in the window's own pixels (0,0 = top-left of its content).

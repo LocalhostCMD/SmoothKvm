@@ -38,47 +38,44 @@ impl Encoder {
     }
 
     /// Encode a BGRA frame (top-down rows, `w*4` bytes each). Returns the packets to send (empty = no change).
+    /// Bands of tile rows are encoded on all CPU cores at once; the output is the same as doing it in order.
     pub fn encode(&mut self, frame: &[u8]) -> Vec<Vec<u8>> {
         let (w, h) = (self.w, self.h);
         if frame.len() < w * h * 4 {
             return vec![];
         }
+        let band_bytes = TILE * w * 4;
+        let bands: Vec<(usize, &mut [u8])> = self.prev.chunks_mut(band_bytes).enumerate().collect();
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 8);
+        let workers = if w * h < 512 * 512 { 1 } else { cores.min(bands.len()) };
+        // contiguous groups of bands, one per worker, results kept in order
+        let per = bands.len().div_ceil(workers.max(1));
+        let mut groups: Vec<Vec<(usize, &mut [u8])>> = Vec::new();
+        for b in bands {
+            if groups.last().map(|g| g.len() >= per).unwrap_or(true) {
+                groups.push(Vec::new());
+            }
+            groups.last_mut().unwrap().push(b);
+        }
+        let records: Vec<Vec<u8>> = if groups.len() <= 1 {
+            groups.into_iter().flatten().flat_map(|(bi, prev)| encode_band(frame, w, h, bi, prev)).collect()
+        } else {
+            std::thread::scope(|s| {
+                let handles: Vec<_> = groups
+                    .into_iter()
+                    .map(|g| s.spawn(move || g.into_iter().flat_map(|(bi, prev)| encode_band(frame, w, h, bi, prev)).collect::<Vec<Vec<u8>>>()))
+                    .collect();
+                handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+            })
+        };
+        // pack the tile records into packets that each fit one encrypted frame
         let mut packets = Vec::new();
         let mut cur: Vec<u8> = Vec::new();
-        let mut xor = Vec::with_capacity(TILE * TILE * 3);
-        for ty in (0..h).step_by(TILE) {
-            let th = TILE.min(h - ty);
-            for tx in (0..w).step_by(TILE) {
-                let tw = TILE.min(w - tx);
-                // quick check: did anything in this tile change?
-                let changed = (ty..ty + th).any(|y| {
-                    let a = (y * w + tx) * 4;
-                    frame[a..a + tw * 4] != self.prev[a..a + tw * 4]
-                });
-                if !changed {
-                    continue;
-                }
-                xor.clear();
-                for y in ty..ty + th {
-                    let a = (y * w + tx) * 4;
-                    for i in 0..tw {
-                        let p = a + i * 4;
-                        xor.push(frame[p] ^ self.prev[p]);
-                        xor.push(frame[p + 1] ^ self.prev[p + 1]);
-                        xor.push(frame[p + 2] ^ self.prev[p + 2]);
-                    }
-                    self.prev[a..a + tw * 4].copy_from_slice(&frame[a..a + tw * 4]);
-                }
-                let data = miniz_oxide::deflate::compress_to_vec(&xor, 1);
-                if !cur.is_empty() && cur.len() + 12 + data.len() > MAX_PACKET {
-                    packets.push(std::mem::take(&mut cur));
-                }
-                for v in [tx as u16, ty as u16, tw as u16, th as u16] {
-                    cur.extend_from_slice(&v.to_le_bytes());
-                }
-                cur.extend_from_slice(&(data.len() as u32).to_le_bytes());
-                cur.extend_from_slice(&data);
+        for r in records {
+            if !cur.is_empty() && cur.len() + r.len() > MAX_PACKET {
+                packets.push(std::mem::take(&mut cur));
             }
+            cur.extend_from_slice(&r);
         }
         if !cur.is_empty() {
             packets.push(cur);
@@ -87,11 +84,64 @@ impl Encoder {
     }
 }
 
+/// Encode the changed tiles of one band of tile rows (`prev` = that band of the previous frame, updated here).
+/// Returns one record per changed tile: x, y, w, h (u16), len (u32), deflate data.
+fn encode_band(frame: &[u8], w: usize, h: usize, band: usize, prev: &mut [u8]) -> Vec<Vec<u8>> {
+    let ty = band * TILE;
+    let th = TILE.min(h - ty);
+    let mut out = Vec::new();
+    let mut xor = Vec::with_capacity(TILE * TILE * 3);
+    // one compressor for the whole band (setting one up costs far more than compressing a tile)
+    use miniz_oxide::deflate::core::{compress, create_comp_flags_from_zip_params, CompressorOxide, TDEFLFlush, TDEFLStatus};
+    let mut comp = CompressorOxide::new(create_comp_flags_from_zip_params(1, 0, 0));
+    let mut buf = vec![0u8; TILE * TILE * 3 * 2 + 256];
+    for tx in (0..w).step_by(TILE) {
+        let tw = TILE.min(w - tx);
+        // quick check: did anything in this tile change?
+        let changed = (0..th).any(|r| {
+            let (f, p) = (((ty + r) * w + tx) * 4, (r * w + tx) * 4);
+            frame[f..f + tw * 4] != prev[p..p + tw * 4]
+        });
+        if !changed {
+            continue;
+        }
+        xor.clear();
+        for r in 0..th {
+            let (f, p) = (((ty + r) * w + tx) * 4, (r * w + tx) * 4);
+            let (src, old) = (&frame[f..f + tw * 4], &mut prev[p..p + tw * 4]);
+            for i in 0..tw {
+                let q = i * 4;
+                xor.push(src[q] ^ old[q]);
+                xor.push(src[q + 1] ^ old[q + 1]);
+                xor.push(src[q + 2] ^ old[q + 2]);
+            }
+            old.copy_from_slice(src);
+        }
+        comp.reset();
+        let (status, _, written) = compress(&mut comp, &xor, &mut buf, TDEFLFlush::Finish);
+        let data: std::borrow::Cow<[u8]> = if status == TDEFLStatus::Done {
+            std::borrow::Cow::Borrowed(&buf[..written])
+        } else {
+            std::borrow::Cow::Owned(miniz_oxide::deflate::compress_to_vec(&xor, 1))
+        };
+        let mut rec = Vec::with_capacity(12 + data.len());
+        for v in [tx as u16, ty as u16, tw as u16, th as u16] {
+            rec.extend_from_slice(&v.to_le_bytes());
+        }
+        rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        rec.extend_from_slice(&data);
+        out.push(rec);
+    }
+    out
+}
+
 pub struct Decoder {
     pub w: usize,
     pub h: usize,
     /// current picture, BGRA (alpha always 255)
     pub buf: Vec<u8>,
+    inflater: Box<miniz_oxide::inflate::core::DecompressorOxide>,
+    scratch: Vec<u8>,
 }
 
 impl Decoder {
@@ -104,7 +154,7 @@ impl Decoder {
         for px in buf.chunks_exact_mut(4) {
             px[3] = 255;
         }
-        Ok(Self { w, h, buf })
+        Ok(Self { w, h, buf, inflater: Box::default(), scratch: vec![0; TILE * TILE * 3] })
     }
 
     /// Apply one packet; returns the rectangles that changed (x, y, w, h).
@@ -125,10 +175,16 @@ impl Decoder {
             let data = packet.get(p..p + len).ok_or_else(|| bad("truncated tile"))?;
             p += len;
             let want = tw * th * 3;
-            let xor = miniz_oxide::inflate::decompress_to_vec_with_limit(data, want).map_err(|_| bad("bad tile data"))?;
-            if xor.len() != want {
-                return Err(bad("tile has the wrong size"));
+            // inflate into a fixed tile-sized buffer with a reused decompressor: anything that would come out
+            // bigger than the tile (a "zip bomb") stops with an error instead of allocating
+            use miniz_oxide::inflate::core::{decompress, inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF};
+            use miniz_oxide::inflate::TINFLStatus;
+            self.inflater.init();
+            let (status, _, n) = decompress(&mut self.inflater, data, &mut self.scratch[..want], 0, TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+            if status != TINFLStatus::Done || n != want {
+                return Err(bad("bad tile data"));
             }
+            let xor = &self.scratch[..want];
             let mut i = 0;
             for row in y..y + th {
                 let a = (row * self.w + x) * 4;
@@ -196,6 +252,40 @@ mod tests {
         assert_eq!(rects, vec![(128, 64, 64, 64)]);
         assert!(packets.iter().map(|p| p.len()).sum::<usize>() < 1500, "a small change stays small");
         assert!(same_rgb(&dec.buf, &f2));
+    }
+
+    /// How fast a full 1080p change encodes and decodes (run with --ignored --nocapture, release build).
+    #[test]
+    #[ignore]
+    fn codec_speed() {
+        let (w, h) = (1920usize, 1080usize);
+        // something like a CAD view: smooth gradients with some detail, all of it changing each frame
+        let mk = |k: usize| -> Vec<u8> {
+            (0..w * h)
+                .flat_map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    let v = ((x + k * 7) ^ (y * 3)) as u8;
+                    [v, (x / 8 + k) as u8, (y / 8) as u8, 255]
+                })
+                .collect()
+        };
+        let frames: Vec<Vec<u8>> = (0..10).map(mk).collect();
+        let mut enc = Encoder::new(w as u32, h as u32);
+        let mut dec = Decoder::new(w as u32, h as u32).unwrap();
+        let (mut bytes, mut te, mut td) = (0usize, 0f64, 0f64);
+        for f in &frames {
+            let t = std::time::Instant::now();
+            let packets = enc.encode(f);
+            te += t.elapsed().as_secs_f64();
+            bytes += packets.iter().map(|p| p.len()).sum::<usize>();
+            let t = std::time::Instant::now();
+            for p in &packets {
+                dec.apply(p).unwrap();
+            }
+            td += t.elapsed().as_secs_f64();
+        }
+        let n = frames.len() as f64;
+        println!("full 1080p change: encode {:.1} ms, decode {:.1} ms, {:.0} KB per frame", te / n * 1000.0, td / n * 1000.0, bytes as f64 / n / 1024.0);
     }
 
     #[test]

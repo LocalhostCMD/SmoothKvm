@@ -210,12 +210,18 @@ fn collect(paths: &[PathBuf]) -> io::Result<Vec<(PathBuf, String, u64)>> {
 }
 
 /// Send files/folders to `target`. Blocks until the other side confirms; returns a summary.
+#[allow(dead_code)]
 pub fn send(target: &Target, paths: &[PathBuf], ident: &Identity) -> io::Result<String> {
+    send_as(target, paths, ident, None)
+}
+
+/// `drag` = Some(id): these files are being dragged across (the other computer stages them for the drop).
+pub fn send_as(target: &Target, paths: &[PathBuf], ident: &Identity, drag: Option<u32>) -> io::Result<String> {
     let files = collect(paths)?;
     let total: u64 = files.iter().map(|f| f.2).sum();
     let count = files.len() as u32;
     let mut tr = Tracker::begin("send", &target.name, count, total);
-    let res = send_inner(target, &files, total, ident, &mut tr);
+    let res = send_inner(target, &files, total, ident, &mut tr, drag);
     match &res {
         Ok(d) => {
             tr.end(total, true, d);
@@ -229,10 +235,14 @@ pub fn send(target: &Target, paths: &[PathBuf], ident: &Identity) -> io::Result<
     res
 }
 
-fn send_inner(target: &Target, files: &[(PathBuf, String, u64)], total: u64, ident: &Identity, tr: &mut Tracker) -> io::Result<String> {
+fn send_inner(target: &Target, files: &[(PathBuf, String, u64)], total: u64, ident: &Identity, tr: &mut Tracker, drag: Option<u32>) -> io::Result<String> {
     let mut conn = net::connect(&target.addr, ident, None, &target.name)?;
     conn.set_timeouts(Some(Duration::from_secs(60)), Some(Duration::from_secs(30)))?;
-    conn.send(&Message::SendFiles { count: files.len() as u32, total })?;
+    let count = files.len() as u32;
+    conn.send(&match drag {
+        Some(drag) => Message::DragFiles { drag, count, total },
+        None => Message::SendFiles { count, total },
+    })?;
     match conn.recv()? {
         Message::FilesResult { ok: true, .. } => {}
         Message::FilesResult { ok: false, detail } => return Err(io::Error::new(io::ErrorKind::PermissionDenied, shared::clean(&detail))),
@@ -312,6 +322,10 @@ fn push_files(conn: &mut SecureConn, files: &[(PathBuf, String, u64)], tr: &mut 
 
 /// Start a transfer on a background thread (used by the app, the terminal UI and the drop strip).
 pub fn send_async(target: Option<String>, paths: Vec<PathBuf>, ident: std::sync::Arc<Identity>) -> io::Result<Target> {
+    send_async_as(target, paths, ident, None)
+}
+
+pub fn send_async_as(target: Option<String>, paths: Vec<PathBuf>, ident: std::sync::Arc<Identity>, drag: Option<u32>) -> io::Result<Target> {
     if let Some(p) = progress() {
         if !p.finished {
             return Err(io::Error::new(io::ErrorKind::WouldBlock, "a transfer is already running"));
@@ -327,7 +341,7 @@ pub fn send_async(target: Option<String>, paths: Vec<PathBuf>, ident: std::sync:
     set(Progress { dir: "send", peer: t.name.clone(), file: "preparing...".into(), files: 0, done_bytes: 0, total_bytes: 0, rate: 0, finished: false, ok: false, detail: String::new() });
     let t2 = t.clone();
     std::thread::spawn(move || {
-        let _ = send(&t2, &paths, &ident);
+        let _ = send_as(&t2, &paths, &ident, drag);
     });
     Ok(t)
 }
@@ -407,6 +421,12 @@ pub fn safe_rel(path: &str) -> Option<Vec<String>> {
 }
 
 /// "report.pdf" -> "report (2).pdf" until the name is free.
+/// A name that is free in `dir` ("name (2).ext" if "name.ext" is taken).
+#[cfg_attr(unix, allow(dead_code))] // used by the Windows drag
+pub fn unique_name(dir: &Path, name: &str) -> String {
+    unique(dir, name)
+}
+
 fn unique(dir: &Path, name: &str) -> String {
     if !dir.join(name).exists() && !dir.join(format!("{name}.part")).exists() {
         return name.to_string();
@@ -424,8 +444,9 @@ fn unique(dir: &Path, name: &str) -> String {
     format!("{stem} ({}){ext}", std::process::id())
 }
 
-/// Receive a transfer (the session's first message was SendFiles).
-pub fn receive(mut conn: SecureConn, peer: &str, count: u32, total: u64) -> io::Result<()> {
+/// Receive a transfer (the session's first message was SendFiles, or DragFiles when `drag` is set:
+/// then the files go to that drag's private staging folder and the drop on this computer is told when they are in).
+pub fn receive(mut conn: SecureConn, peer: &str, count: u32, total: u64, drag: Option<u32>) -> io::Result<()> {
     if !store::load_config().file_drop {
         shared::info(&format!("{peer} tried to send files; refused because receiving files is off"));
         return conn.send(&Message::FilesResult { ok: false, detail: "that computer does not accept files (file drop is off)".into() });
@@ -433,7 +454,16 @@ pub fn receive(mut conn: SecureConn, peer: &str, count: u32, total: u64) -> io::
     if count == 0 || count > MAX_FILES {
         return conn.send(&Message::FilesResult { ok: false, detail: "bad file count".into() });
     }
-    let root = inbox();
+    #[cfg(windows)]
+    let root = match drag {
+        Some(d) => crate::drag_win::staging(d),
+        None => inbox(),
+    };
+    #[cfg(not(windows))]
+    let root = {
+        let _ = drag;
+        inbox()
+    };
     if let Err(e) = fs::create_dir_all(&root) {
         return conn.send(&Message::FilesResult { ok: false, detail: format!("cannot create {}: {e}", root.display()) });
     }
@@ -449,11 +479,21 @@ pub fn receive(mut conn: SecureConn, peer: &str, count: u32, total: u64) -> io::
             let what = if saved.len() == 1 { first } else { format!("{} files", saved.len()) };
             let detail = format!("saved {what} ({}) to {}", human(done), root.display());
             tr.end(done, true, &detail);
-            shared::notify(&format!("Received {what} from {peer} -> {}", root.display()));
+            #[cfg(windows)]
+            if let Some(d) = drag {
+                crate::drag_win::ready(d, true);
+            }
+            if drag.is_none() || cfg!(not(windows)) {
+                shared::notify(&format!("Received {what} from {peer} -> {}", root.display()));
+            }
             conn.send(&Message::FilesResult { ok: true, detail })?;
         }
         Err(e) => {
             tr.end(0, false, &e.to_string());
+            #[cfg(windows)]
+            if let Some(d) = drag {
+                crate::drag_win::ready(d, false);
+            }
             shared::warn(&format!("Receiving files from {peer} failed: {e}"));
             let _ = conn.send(&Message::FilesResult { ok: false, detail: e.to_string() });
         }

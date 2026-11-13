@@ -83,6 +83,10 @@ struct Strip {
     shown: bool,
     target: Option<(String, usize, Edge, f32)>,
     hovering: bool,
+    /// When the current drag came over the strip (it is carried across after resting there briefly).
+    hover_since: Option<Instant>,
+    /// 0 = not carried, 1 = asked for the file list to carry it, 2 = carried over (the drop here just ends it)
+    carry: u8,
     source: Window,
     hide_at: Option<Instant>,
 }
@@ -164,6 +168,8 @@ impl Strip {
         let (x, y, w, h) = self.geometry(edge, frac);
         self.target = Some((name, idx, edge, frac));
         self.hovering = false;
+        self.hover_since = None;
+        self.carry = 0;
         self.hide_at = None;
         unsafe {
             (self.x.XMoveResizeWindow)(self.dpy, self.win, x, y, w.max(1), h.max(1));
@@ -182,6 +188,8 @@ impl Strip {
         }
         self.shown = false;
         self.hovering = false;
+        self.hover_since = None;
+        self.carry = 0;
         self.hide_at = None;
     }
 
@@ -268,7 +276,7 @@ fn run(x: X, dpy: *mut Display, rx: Receiver<Cmd>, ident: Arc<Identity>) {
         (x.XFlush)(dpy);
         w
     };
-    let mut s = Strip { x, dpy, win, atoms, shown: false, target: None, hovering: false, source: 0, hide_at: None };
+    let mut s = Strip { x, dpy, win, atoms, shown: false, target: None, hovering: false, hover_since: None, carry: 0, source: 0, hide_at: None };
     shared::info("Drag-and-drop to other computers is ready: drag files against the screen edge where another computer is");
     let fd = unsafe { (s.x.XConnectionNumber)(dpy) };
     loop {
@@ -293,6 +301,16 @@ fn run(x: X, dpy: *mut Display, rx: Receiver<Cmd>, ident: Arc<Identity>) {
                 s.hide();
             }
         }
+        if s.shown && s.hovering && s.carry == 0 {
+            let wait = Duration::from_millis(crate::store::load_config().switch_delay_ms.max(150) as u64);
+            if s.hover_since.map(|t| t.elapsed() >= wait).unwrap_or(false) {
+                s.carry = 1;
+                unsafe {
+                    (s.x.XConvertSelection)(dpy, s.atoms.selection, s.atoms.uri_list, s.atoms.prop, s.win, 0);
+                    (s.x.XFlush)(dpy);
+                }
+            }
+        }
         let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
         unsafe { libc::poll(&mut pfd, 1, 40) };
         while unsafe { (s.x.XPending)(dpy) } > 0 {
@@ -306,6 +324,7 @@ fn run(x: X, dpy: *mut Display, rx: Receiver<Cmd>, ident: Arc<Identity>) {
                     if kind == s.atoms.enter {
                         s.source = d(0) as Window;
                         s.hovering = true;
+                        s.hover_since = Some(Instant::now());
                         s.draw();
                     } else if kind == s.atoms.position {
                         s.source = d(0) as Window;
@@ -313,13 +332,38 @@ fn run(x: X, dpy: *mut Display, rx: Receiver<Cmd>, ident: Arc<Identity>) {
                         s.client_message(s.source, s.atoms.status, [s.win as c_long, 1 | 2, 0, 0, s.atoms.action_copy as c_long]);
                     } else if kind == s.atoms.leave {
                         s.hovering = false;
+                        s.hover_since = None;
                         s.draw();
                     } else if kind == s.atoms.drop {
                         s.source = d(0) as Window;
+                        if s.carry == 2 {
+                            // the drag went on to the other computer; this is only the drag ending here
+                            s.client_message(s.source, s.atoms.finished, [s.win as c_long, 1, s.atoms.action_copy as c_long, 0, 0]);
+                            s.hide();
+                            continue;
+                        }
                         let time = d(2) as c_ulong;
                         unsafe {
                             (s.x.XConvertSelection)(dpy, s.atoms.selection, s.atoms.uri_list, s.atoms.prop, s.win, time);
                             (s.x.XFlush)(dpy);
+                        }
+                    }
+                }
+                SelectionNotify if s.carry == 1 => {
+                    // the file list of a drag resting on the strip: carry it over to the other computer
+                    let got = ev.long(SEL_PROPERTY) as Atom != 0;
+                    let paths = if got { s.read_drop() } else { vec![] };
+                    s.carry = 3; // tried (a plain drop on the strip still works if this does not)
+                    if let (false, Some((name, idx, _edge, frac))) = (paths.is_empty(), s.target.clone()) {
+                        let mut b = [0u8; 4];
+                        let _ = getrandom::getrandom(&mut b);
+                        let drag = u32::from_le_bytes(b);
+                        let names: Vec<String> = paths.iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string())).collect();
+                        if crate::capture_linux::cross_with_drag(idx, frac, names, drag) {
+                            match xfer::send_async_as(Some(name.clone()), paths, ident.clone(), Some(drag)) {
+                                Ok(_) => s.carry = 2,
+                                Err(e) => shared::notify(&format!("Could not carry the files over: {e}")),
+                            }
                         }
                     }
                 }

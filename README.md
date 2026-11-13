@@ -44,6 +44,11 @@ search while it is showing a code.
   `SmoothKvm send <files or folders> [--to <name>]`. Files land in `Downloads/SmoothKvm` on the other computer (choose
   another folder under **Send files** → *Save files I receive in this folder*, or `files folder <path>`), never
   overwrite anything and are never opened.
+- **Drag files straight into a folder on the other computer** (Ubuntu → Windows): drag files in Dolphin against
+  the edge where the laptop is and hold them there a moment. The pointer carries on onto the laptop with the files
+  "in hand"; let go over any Explorer window, the desktop or an app, and they are copied there. If you let go before
+  the copy has finished, the drop waits for it; if you let go somewhere that doesn't take files, they are kept in
+  the received-files folder.
 - **Move a screen** to another side after pairing: drag it in the Screens map (terminal: `move <name> <side>`).
 - **Show an app on the other computer** (Windows → Linux, e.g. Fusion 360 from the laptop on the Ubuntu screen):
   drag the app's window by its title bar onto the strip at the screen edge, or pick it under **Show an app on another

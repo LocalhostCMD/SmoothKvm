@@ -46,6 +46,8 @@ mod wincodec;
 mod xfer;
 #[cfg(windows)]
 mod stream_win;
+#[cfg(windows)]
+mod drag_win;
 use store::Identity;
 
 #[cfg(unix)]
@@ -246,7 +248,11 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
             return Ok(());
         }
         Message::SendFiles { count, total } => {
-            return xfer::receive(conn, peer, count, total);
+            return xfer::receive(conn, peer, count, total, None);
+        }
+        // the files of a drag being carried over from the other computer
+        Message::DragFiles { drag, count, total } => {
+            return xfer::receive(conn, peer, count, total, Some(drag));
         }
         // An app window from the other computer, to show here.
         Message::WindowOpen { id, title, width, height } => {
@@ -298,6 +304,11 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
                     shared::session_side(id, *edge);
                 }
                 receiver_effect(&m);
+                // a file drag carried over from the other computer: pick it up here
+                #[cfg(windows)]
+                if let Message::DragStart { drag, names } = &m {
+                    drag_win::begin(names.clone(), *drag);
+                }
                 if let Ok(mut c) = cs.lock() {
                     apply_message(m, &mut held, &mut c);
                 }
