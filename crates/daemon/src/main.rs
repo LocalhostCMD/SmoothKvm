@@ -69,6 +69,8 @@ mod inject_linux;
 mod dbus_min;
 #[cfg(target_os = "linux")]
 mod edge_linux;
+#[cfg(target_os = "linux")]
+mod drop_x11;
 #[cfg(unix)]
 mod linux_app;
 #[cfg(windows)]
@@ -239,6 +241,9 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
         Message::Announce { port, .. } => shared::session_control(id, Some(port)),
         other => {
             shared::session_control(id, None);
+            if let Message::Enter { edge, .. } = &other {
+                shared::session_side(id, *edge);
+            }
             apply_message(other, &mut held, &mut clip::ClipSync::new())
         }
     }
@@ -264,6 +269,9 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
     let end = loop {
         match rd.recv() {
             Ok(m) => {
+                if let Message::Enter { edge, .. } = &m {
+                    shared::session_side(id, *edge);
+                }
                 if let Ok(mut c) = cs.lock() {
                     apply_message(m, &mut held, &mut c);
                 }

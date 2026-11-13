@@ -117,6 +117,30 @@ struct LiveSession {
     back_port: Option<u16>,
     /// Only input sessions (not file transfers or display tunnels) count as "controlling this PC".
     control: bool,
+    /// Which side of THIS screen the controlling computer is on (learned when the pointer crosses over).
+    side: Option<kvm_protocol::Edge>,
+}
+
+/// The controller says this screen sits on its `edge` side, so it is on the opposite side of ours.
+pub fn session_side(id: u64, controllers_edge: kvm_protocol::Edge) {
+    use kvm_protocol::Edge::*;
+    let ours = match controllers_edge {
+        Left => Right,
+        Right => Left,
+        Top => Bottom,
+        Bottom => Top,
+    };
+    if let Ok(mut s) = SESSIONS.lock() {
+        if let Some(x) = s.iter_mut().find(|x| x.id == id) {
+            x.side = Some(ours);
+        }
+    }
+}
+
+/// The side of this screen that faces the computer controlling it (the most recent one), if known.
+#[cfg_attr(unix, allow(dead_code))]
+pub fn controller_side() -> Option<kvm_protocol::Edge> {
+    SESSIONS.lock().ok().and_then(|s| s.iter().rev().filter(|x| x.control).find_map(|x| x.side))
 }
 
 static SESSIONS: Mutex<Vec<LiveSession>> = Mutex::new(Vec::new());
@@ -125,7 +149,7 @@ static SESSION_ID: AtomicU64 = AtomicU64::new(1);
 pub fn session_start(peer: &str, ip: IpAddr) -> u64 {
     let id = SESSION_ID.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut s) = SESSIONS.lock() {
-        s.push(LiveSession { id, peer: clean(peer), started: now_secs(), ip, back_port: None, control: false });
+        s.push(LiveSession { id, peer: clean(peer), started: now_secs(), ip, back_port: None, control: false, side: None });
     }
     id
 }

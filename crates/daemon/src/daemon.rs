@@ -325,6 +325,8 @@ pub fn launch_viewer(port: u16) -> bool {
 pub fn start_links(ident: Arc<Identity>) -> io::Result<()> {
     let cfg = store::load_config();
     let ctl = crate::capture_linux::start(cfg.clone())?;
+    #[cfg(target_os = "linux")]
+    crate::drop_x11::start(ident.clone());
     apply(&cfg, &ctl, &ident);
     std::thread::spawn(move || {
         let mut seen = store::config_mtime();

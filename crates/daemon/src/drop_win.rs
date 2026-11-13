@@ -113,7 +113,9 @@ unsafe fn tick(hwnd: HWND) {
                     // refresh the target list at most every 2 s (it reads the config file)
                     if w.targets_at.map(|t| t.elapsed() > Duration::from_secs(2)).unwrap_or(true) {
                         w.targets = xfer::targets();
-                        w.edge = store::load_config().drop_edge;
+                        // While another computer controls this one, the strip goes on the side facing it, so
+                        // you drag the file toward that computer (otherwise the side chosen in the settings).
+                        w.edge = shared::controller_side().unwrap_or_else(|| store::load_config().drop_edge);
                         w.targets_at = Some(Instant::now());
                     }
                     if !w.targets.is_empty() {

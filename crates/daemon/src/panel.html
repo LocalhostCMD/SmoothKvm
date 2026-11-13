@@ -29,6 +29,9 @@ button.danger{background:transparent;color:var(--bad)}
 .slot{border:1.5px dashed var(--line);border-radius:10px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:13px;color:var(--mute);cursor:pointer;padding:6px;background:transparent;width:100%;height:100%}
 .slot.has{border-style:solid;border-color:var(--acc);background:var(--acc2);color:var(--ink)}
 .slot.sel{outline:2.5px solid var(--acc);outline-offset:2px}
+.slot.has{cursor:grab;touch-action:none}
+.slot.dragging{cursor:grabbing;position:relative;z-index:5;box-shadow:0 8px 24px #0004;opacity:.92}
+.slot.droptarget{border:2px solid var(--ok);background:color-mix(in srgb,var(--ok) 15%,transparent)}
 .me{grid-area:2/2;border:2px solid var(--mute);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:13px;text-align:center;background:var(--card)}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--mute)}
 .dot.connected{background:var(--ok)}.dot.connecting{background:var(--warn)}.dot.not_paired{background:var(--warn)}.dot.offline{background:var(--bad)}
@@ -102,7 +105,7 @@ button.dangerline{background:transparent;color:var(--bad);border:1px solid var(-
 <div class="card">
   <h2>Screens</h2>
   <div class="map" id="map"></div>
-  <div class="hint" style="text-align:center">Click a side to add a computer there, or click a screen to edit it.</div>
+  <div class="hint" style="text-align:center">Click a side to add a computer there. Click a screen to edit it, or <b>drag it to another side</b> to move it.</div>
   <div class="hint linux-only" style="text-align:center"><b>To switch:</b> push the mouse off that side of the screen (KDE Plasma), or press <b>Scroll Lock</b>. Push back past the other computer's edge, or press Scroll Lock again, to come back. Three quick presses = emergency stop.</div>
   <div id="detail"></div>
 </div>
@@ -282,18 +285,52 @@ function renderMap(){
   const me=document.createElement('div'); me.className='me'; me.textContent='This PC (keyboard + mouse)'; map.appendChild(me);
   EDGES.forEach(e=>{
     const i=cfg.remotes.findIndex(r=>r.edge===e && r.enabled!==false) >= 0 ? cfg.remotes.findIndex(r=>r.edge===e && r.enabled!==false) : cfg.remotes.findIndex(r=>r.edge===e);
-    const b=document.createElement('button'); b.className='slot'; b.style.gridArea=pos[e];
+    const b=document.createElement('button'); b.className='slot'; b.style.gridArea=pos[e]; b.dataset.edge=e;
     if(i>=0){
       const r=cfg.remotes[i]; b.classList.add('has'); if(i===sel) b.classList.add('sel');
       const d=document.createElement('span'); d.className='dot '+stOf(r).state; b.appendChild(d);
       b.appendChild(document.createTextNode(r.name));
-      b.onclick=()=>{ sel=i; render(); };
+      b.title='Click to edit. Drag to another side to move it.';
+      dragToMove(b, i);
     } else {
       b.textContent='+ add a computer on the '+e.toLowerCase();
       b.onclick=()=>openWizard('ctl', e);
     }
     map.appendChild(b);
   });
+}
+// Drag a screen to another side of "This PC" to move it there (swaps with a screen already there).
+// Pointer events (not HTML drag-and-drop) so it works the same in the Windows app and in a browser.
+let mapDrag=null;
+function dragToMove(b, i){
+  b.onpointerdown=e=>{ if(e.button!==0) return; mapDrag={i, x:e.clientX, y:e.clientY, moving:false, el:b}; b.setPointerCapture(e.pointerId); };
+  b.onpointermove=e=>{
+    if(!mapDrag || mapDrag.el!==b) return;
+    if(!mapDrag.moving && Math.hypot(e.clientX-mapDrag.x, e.clientY-mapDrag.y) > 6){ mapDrag.moving=true; b.classList.add('dragging'); }
+    if(!mapDrag.moving) return;
+    b.style.transform='translate('+(e.clientX-mapDrag.x)+'px,'+(e.clientY-mapDrag.y)+'px)';
+    document.querySelectorAll('.slot').forEach(s=>s.classList.remove('droptarget'));
+    const t=slotAt(e.clientX, e.clientY, b); if(t && t!==b) t.classList.add('droptarget');
+  };
+  b.onpointerup=e=>{
+    const d=mapDrag; mapDrag=null; if(!d || d.el!==b) return;
+    b.classList.remove('dragging'); b.style.transform='';
+    document.querySelectorAll('.slot').forEach(s=>s.classList.remove('droptarget'));
+    if(!d.moving){ sel=i; render(); return; }
+    const t=slotAt(e.clientX, e.clientY, b);
+    if(!t || !t.dataset.edge || t.dataset.edge===cfg.remotes[i].edge){ render(); return; }
+    const to=t.dataset.edge, from=cfg.remotes[i].edge;
+    cfg.remotes.forEach((r,j)=>{ if(j!==i && r.edge===to) r.edge=from; });
+    cfg.remotes[i].edge=to; sel=i; render(); touch();
+    say(cfg.remotes[i].name+' is now on the '+to.toLowerCase(), true);
+  };
+  b.onpointercancel=()=>{ mapDrag=null; b.classList.remove('dragging'); b.style.transform=''; render(); };
+}
+function slotAt(x, y, self){
+  self.style.pointerEvents='none';
+  const el=document.elementFromPoint(x, y);
+  self.style.pointerEvents='';
+  return el ? el.closest('.slot') : null;
 }
 function field(label, input){ const w=document.createElement('div'); const l=document.createElement('label'); l.textContent=label; w.append(l,input); return w; }
 function inp(type, value, on){ const i=document.createElement('input'); i.type=type; i.value=value; i.oninput=()=>on(i.value); return i; }
@@ -641,7 +678,7 @@ async function poll(){
     renderXfer(s);
     $('pausedbar').style.display = s.paused ? 'block' : 'none';
     $('estop').style.display = s.paused ? 'none' : '';
-    if(cfg){ renderMap(); renderStatusLine(); }
+    if(cfg && !mapDrag){ renderMap(); renderStatusLine(); }
   }catch(e){ say('Lost connection to SmoothKvm: '+e.message, false); }
 }
 async function init(){

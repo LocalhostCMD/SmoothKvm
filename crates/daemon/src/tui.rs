@@ -44,6 +44,7 @@ const SENDER_CMDS: &[(&str, &str)] = &[
     ("/status", "show screens, connections and settings"),
     ("/screens", "list your screens"),
     ("/add", "/add <name> <left|right|top|bottom> <host:port> [WxH]"),
+    ("/move", "/move <name> <left|right|top|bottom>   put a screen on another side"),
     ("/remove", "/remove <name>"),
     ("/pair", "/pair <name> <PIN>   pair with a screen; the 8-digit PIN is shown on that device (run pair there)"),
     ("/display", "/display <name> start|stop|status [WxH]"),
@@ -73,6 +74,7 @@ const RECEIVER_CMDS: &[(&str, &str)] = &[
     ("/files", "/files on|off   accept files other computers send (saved in Downloads/SmoothKvm)"),
     ("/screens", "list the screens this computer can control (switch with the Scroll Lock key)"),
     ("/add", "/add <name> <left|right|top|bottom> <host:port>   a screen to control from this computer"),
+    ("/move", "/move <name> <left|right|top|bottom>   put a screen on another side"),
     ("/remove", "/remove <name>"),
     ("/resume", "resume after an emergency stop"),
     ("/log", "/log [alerts]   recent activity and security alerts"),
@@ -278,6 +280,27 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             cfg["remotes"].as_array_mut().ok_or("bad config")?.push(json!({"name": a[0], "addr": addr, "edge": edge, "width": w, "height": h, "enabled": true}));
             set_config(c, &cfg)?;
             Ok(vec![(Kind::Good, format!("Added {} on the {}.", a[0], edge.to_lowercase())), (Kind::Dim, format!("Next: start pairing mode on that device, then  /pair {}", a[0]))])
+        }
+        ("/move", _) => {
+            let (name, side) = match (a.first(), a.get(1)) {
+                (Some(n), Some(s)) => (*n, *s),
+                _ => return Err("usage: /move <name> <left|right|top|bottom>".into()),
+            };
+            let edge = edge_name(side).ok_or("side must be left, right, top or bottom")?;
+            let mut cfg = state_of(c)?["config"].clone();
+            let i = remote_index(&cfg, name).ok_or("no such screen (see /screens)")?;
+            let remotes = cfg["remotes"].as_array_mut().ok_or("bad config")?;
+            let from = remotes[i]["edge"].clone();
+            // a screen already on that side swaps places with it
+            for (j, r) in remotes.iter_mut().enumerate() {
+                if j != i && r["edge"] == edge {
+                    r["edge"] = from.clone();
+                }
+            }
+            remotes[i]["edge"] = json!(edge);
+            let real = remotes[i]["name"].as_str().unwrap_or(name).to_string();
+            set_config(c, &cfg)?;
+            Ok(vec![(Kind::Good, format!("{real} is now on the {}.", edge.to_lowercase()))])
         }
         ("/remove", _) => {
             let name = a.first().ok_or("usage: /remove <name>")?;

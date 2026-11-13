@@ -49,6 +49,8 @@ struct State {
     /// Mouse buttons held on THIS computer (tracked all the time, not only while controlling).
     local_buttons: HashSet<u8>,
     last_blocked_note: Option<Instant>,
+    /// The drop strip is showing (hidden again when the drag ends).
+    strip_shown: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -140,16 +142,33 @@ pub fn edge_hit(side: Edge, frac: f32) {
         return;
     };
     if !st.local_buttons.is_empty() {
-        // Carrying a drag (a file, a window) over to the other computer is not supported yet: crossing now
-        // would leave the drag hanging on this one.
-        let quiet = st.last_blocked_note.map(|t| t.elapsed() < Duration::from_secs(20)).unwrap_or(false);
-        if !quiet {
-            st.last_blocked_note = Some(Instant::now());
-            notify("Let go of the mouse button to move to the other computer");
+        // Dragging something against the edge: offer the drop strip (files dropped there are sent over, and
+        // the pointer then follows). Crossing with the button still down would leave the drag hanging here.
+        let name = st.cfg.remotes[i].name.clone();
+        if crate::drop_x11::available() {
+            crate::drop_x11::show(side, frac, &name, i);
+            st.strip_shown = true;
+        } else {
+            let quiet = st.last_blocked_note.map(|t| t.elapsed() < Duration::from_secs(20)).unwrap_or(false);
+            if !quiet {
+                st.last_blocked_note = Some(Instant::now());
+                notify("Let go of the mouse button to move to the other computer");
+            }
         }
         return;
     }
     enter(st, i, frac);
+}
+
+/// Files were dropped on the strip for screen `idx`: carry on over there.
+pub fn cross_after_drop(idx: usize, _side: Edge, frac: f32) {
+    let Ok(mut g) = STATE.lock() else { return };
+    let Some(st) = g.as_mut() else { return };
+    st.strip_shown = false;
+    if st.paused || st.active.is_some() || !st.connected.get(idx).copied().unwrap_or(false) {
+        return;
+    }
+    enter(st, idx, frac);
 }
 
 /// The pointer is no longer on any edge of this screen.
@@ -290,6 +309,7 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
         armed: true,
         local_buttons: HashSet::new(),
         last_blocked_note: None,
+        strip_shown: false,
     });
     std::thread::spawn(scanner);
     crate::edge_linux::start();
@@ -481,6 +501,11 @@ fn handle(kind: u16, code: u16, value: i32, acc: (&mut i32, &mut i32, &mut i32, 
                         }
                         if !pressed {
                             st.local_buttons.remove(&b);
+                            if st.local_buttons.is_empty() && st.strip_shown {
+                                // the drag ended (dropped on the strip, or elsewhere): the strip goes away
+                                st.strip_shown = false;
+                                crate::drop_x11::hide();
+                            }
                         }
                     }
                 }
@@ -568,6 +593,7 @@ mod tests {
             armed: true,
             local_buttons: HashSet::new(),
             last_blocked_note: None,
+            strip_shown: false,
         };
         (st, rxs)
     }

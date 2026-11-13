@@ -37,9 +37,13 @@ search while it is showing a code.
   `F2` = emergency stop, `F3` = resume. Left/Right, Home/End, Ctrl+Left/Right and Delete edit the line; Up/Down
   recall earlier commands.
 - **Emergency stop**: red button, tray menu, `stop`, F2, or press **Scroll Lock three times**.
-- **Send files**: drag files onto the SmoothKvm window (Windows: or onto the strip that appears at the screen edge
-  while you drag), or `SmoothKvm send <files or folders> [--to <name>]`. They land in `Downloads/SmoothKvm` on the
-  other computer, never overwrite anything and are never opened.
+- **Drag files to the other computer**: drag a file toward the side of the screen where the other computer is. A
+  "Drop to send to …" strip appears at that edge; drop the file on it and it is copied over (on Ubuntu the mouse then
+  carries on onto the other computer). While Ubuntu controls the laptop, the laptop's strip appears on the side facing
+  Ubuntu, so you drag files back the same way. You can also drop files on the SmoothKvm window, or use
+  `SmoothKvm send <files or folders> [--to <name>]`. Files land in `Downloads/SmoothKvm` on the other computer, never
+  overwrite anything and are never opened.
+- **Move a screen** to another side after pairing: drag it in the Screens map (terminal: `move <name> <side>`).
 - **Effects** (Windows; colourful, drawn on screen, never move your mouse): Ripple, Glow, Sparks, Comet x Rainbow,
   Ocean, Sunset, Neon, Mono, with motion curves (bounce, elastic, spring, overshoot or your own).
 - **Game mode**: no screen switching while a full-screen app or game runs.
@@ -89,8 +93,9 @@ The Ubuntu machine can control your other computers too (the app is the same on 
 edge to return. This works on KDE Plasma: Wayland does not let normal apps see the pointer, so SmoothKvm loads a
 tiny KWin script that only reports when the pointer touches a screen edge. **Scroll Lock** also switches (next
 screen, again to cycle, finally back), on any desktop. Three quick presses = emergency stop. While another screen is
-active, this computer's keyboard and mouse are handed to it and a notification tells you who has control. (Holding a
-mouse button while crossing, to drag files or windows over, is coming next.)
+active, this computer's keyboard and mouse are handed to it and a notification tells you who has control. Dragging a
+file against that edge shows the drop strip instead (an X11 window, so it needs XWayland, which Plasma includes).
+Dragging app windows across is not supported yet.
 
 ## Clipboard sharing
 `/clipboard on` (or the checkbox in the app) on both computers. Plain text only, up to 32 KB, only what you copy
