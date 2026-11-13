@@ -47,6 +47,13 @@ Only do this after verifying the thumbprint above through a channel you trust.
   0700 folder, re-tightened if loosened. The Linux service runs with systemd sandbox options.
 - Dependencies are scanned with `cargo audit` (no known vulnerabilities in either shipped program).
 
+## Showing an app on another computer
+- Only happens when you start it (dragging a window to the strip, or picking it in the app), only to a paired computer,
+  over the same encrypted connection. Only that window's picture is sent, never the rest of the screen.
+- Clicks and keys from the other computer's copy of the window are played back on this PC as normal input (the same
+  trust a paired controller already has). The receiving side checks every picture packet (sizes, bounds, compressed
+  size) before using it.
+
 ## Updates
 - About once a day (setting "Check for updates", on by default) the app downloads `latest.json` and `latest.json.sig`
   from `https://github.com/LocalhostCMD/SmoothKvm/releases/latest/download/` using the system's `curl` (HTTPS only).

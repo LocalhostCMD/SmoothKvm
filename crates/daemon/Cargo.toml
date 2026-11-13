@@ -17,6 +17,8 @@ tiny_http.workspace = true
 # Ed25519 signature check of update manifests (both already used by the Noise library; no new code pulled in)
 curve25519-dalek = { version = "4", default-features = false }
 sha2 = "0.10"
+# deflate for the window-streaming tiles (pure Rust; already in the lockfile)
+miniz_oxide = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -27,6 +29,7 @@ features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Security_Cryptography",
+    "Win32_Storage_Xps",
     "Win32_System_Com",
     "Win32_System_Console",
     "Win32_System_DataExchange",

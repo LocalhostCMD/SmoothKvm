@@ -1640,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "kvm-protocol"
-version = "0.8.4"
+version = "0.9.0"
 dependencies = [
  "blake2",
  "postcard",
@@ -1651,12 +1651,13 @@ dependencies = [
 
 [[package]]
 name = "kvmd"
-version = "0.8.4"
+version = "0.9.0"
 dependencies = [
  "curve25519-dalek",
  "getrandom 0.2.17",
  "kvm-protocol",
  "libc",
+ "miniz_oxide 0.8.9",
  "ratatui",
  "serde",
  "serde_json",
@@ -3067,7 +3068,7 @@ checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
 
 [[package]]
 name = "smoothkvm-launcher"
-version = "0.8.4"
+version = "0.9.0"
 
 [[package]]
 name = "snow"

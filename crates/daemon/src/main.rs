@@ -41,7 +41,10 @@ mod rctl;
 mod shared;
 mod store;
 mod tui;
+mod wincodec;
 mod xfer;
+#[cfg(windows)]
+mod stream_win;
 use store::Identity;
 
 #[cfg(unix)]
@@ -71,6 +74,10 @@ mod dbus_min;
 mod edge_linux;
 #[cfg(target_os = "linux")]
 mod drop_x11;
+#[cfg(target_os = "linux")]
+mod view_x11;
+#[cfg(target_os = "linux")]
+mod x11;
 #[cfg(unix)]
 mod linux_app;
 #[cfg(windows)]
@@ -237,6 +244,20 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
         }
         Message::SendFiles { count, total } => {
             return xfer::receive(conn, peer, count, total);
+        }
+        // An app window from the other computer, to show here.
+        Message::WindowOpen { id, title, width, height } => {
+            shared::info(&format!("{peer} is showing \"{}\" here", shared::clean(&title)));
+            #[cfg(target_os = "linux")]
+            {
+                return view_x11::run(conn, peer, id, title, width, height);
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (title, width, height);
+                let _ = conn.send(&Message::WindowClose { id });
+                return Err(io::Error::new(io::ErrorKind::Unsupported, "showing app windows from other computers works on Linux so far"));
+            }
         }
         Message::Announce { port, .. } => shared::session_control(id, Some(port)),
         other => {
@@ -522,6 +543,14 @@ fn main() -> io::Result<()> {
         #[cfg(unix)]
         Some("helper") => update::helper_main(),
         Some("update") => update_cmd(),
+        // show an app window on another computer: SmoothKvm stream "<title>" --to <host:port> [--pin PIN]
+        #[cfg(windows)]
+        Some("stream") => {
+            let to = args.iter().position(|a| a == "--to").and_then(|i| args.get(i + 1)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "usage: SmoothKvm stream \"<window title>\" --to <host:port> [--pin PIN]"))?;
+            let pin = args.iter().position(|a| a == "--pin").and_then(|i| args.get(i + 1)).map(String::as_str);
+            let title = pos.first().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "which window? give part of its title"))?;
+            stream_win::run_cli(title, to, pin)
+        }
         Some("service") => serve(&format!("0.0.0.0:{}", cfg.port), false, true),
         Some("listen") => {
             let addr = pos.first().map(|s| s.to_string()).unwrap_or_else(|| format!("0.0.0.0:{}", cfg.port));

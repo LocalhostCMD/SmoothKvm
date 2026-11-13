@@ -45,6 +45,14 @@ search while it is showing a code.
   another folder under **Send files** → *Save files I receive in this folder*, or `files folder <path>`), never
   overwrite anything and are never opened.
 - **Move a screen** to another side after pairing: drag it in the Screens map (terminal: `move <name> <side>`).
+- **Show an app on the other computer** (Windows → Linux, e.g. Fusion 360 from the laptop on the Ubuntu screen):
+  drag the app's window by its title bar onto the strip at the screen edge, or pick it under **Show an app on another
+  computer** in the window (terminal: `window`). The app keeps running on Windows; its window appears on Ubuntu as a
+  normal window you can move and resize, and your clicks, scrolling and typing there go to the real app. Resizing it
+  resizes the real window; closing it stops showing it (the app stays open). Only the parts of the picture that change
+  are sent (compressed, about 30 frames a second), so it is quick on a wired network; very fast motion over Wi-Fi will
+  be choppier. While you use it, the Windows mouse pointer moves along on the laptop. Linux apps on the Windows
+  screen are not supported yet.
 - **Effects** (Windows; colourful, drawn on screen, never move your mouse): Ripple, Glow, Sparks, Comet x Rainbow,
   Ocean, Sunset, Neon, Mono, with motion curves (bounce, elastic, spring, overshoot or your own).
 - **Game mode**: no screen switching while a full-screen app or game runs.

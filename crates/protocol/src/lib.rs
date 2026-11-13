@@ -69,10 +69,35 @@ pub enum Message {
     FilesEnd,
     /// The receiver's verdict for the whole transfer.
     FilesResult { ok: bool, detail: String },
+    // ---- 0.9: an app window shown on another computer ----
+    /// First message of a window session, sent by the computer the app runs on. Sent again when the window
+    /// changes size (the picture starts over).
+    WindowOpen { id: u32, title: String, width: u32, height: u32 },
+    /// Changed parts of the picture (tile packets, see the daemon's `wincodec`); one or more per frame.
+    WindowTiles { id: u32, data: Vec<u8> },
+    /// A frame is complete: the viewer shows it and answers `WindowAck` (so frames never pile up).
+    WindowFrameEnd { id: u32, seq: u32 },
+    WindowAck { id: u32, seq: u32 },
+    /// Viewer -> app: input inside the window, a new size, or "closed".
+    WindowInput { id: u32, ev: WindowEvent },
+    /// The app's window is gone (or streaming stopped).
+    WindowClose { id: u32 },
+}
+
+/// What the viewer sends back. Coordinates are in the window's own pixels (0,0 = top-left of its content).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum WindowEvent {
+    Move { x: i32, y: i32 },
+    Button { button: MouseButton, pressed: bool },
+    Wheel { dx: i32, dy: i32 },
+    /// USB HID usage code, like `InputEvent::Key`.
+    Key { code: u16, pressed: bool },
+    Resize { width: u32, height: u32 },
+    Close,
 }
 
 /// Protocol version spoken by this build (in `Announce`).
-pub const PROTO_VERSION: u16 = 8;
+pub const PROTO_VERSION: u16 = 9;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AnimationStyle {

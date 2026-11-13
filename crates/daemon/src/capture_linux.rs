@@ -171,6 +171,18 @@ pub fn cross_after_drop(idx: usize, _side: Edge, frac: f32) {
     enter(st, idx, frac);
 }
 
+/// Give the keyboard and mouse back to this computer (an app window from the other one just appeared here).
+pub fn return_home() {
+    if let Ok(mut g) = STATE.lock() {
+        if let Some(st) = g.as_mut() {
+            if st.active.is_some() {
+                leave(st);
+                st.armed = false;
+            }
+        }
+    }
+}
+
 /// The pointer is no longer on any edge of this screen.
 pub fn edge_away() {
     if let Ok(mut g) = STATE.lock() {
@@ -318,7 +330,7 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
 
 // ---- keyboard code translation ----
 
-fn linux_to_hid(code: u16) -> Option<u16> {
+pub(crate) fn linux_to_hid(code: u16) -> Option<u16> {
     static MAP: OnceLock<HashMap<u16, u16>> = OnceLock::new();
     MAP.get_or_init(|| (0u16..=0xE7).filter_map(|h| crate::inject_linux::hid_to_linux(h).map(|l| (l, h))).collect())
         .get(&code)

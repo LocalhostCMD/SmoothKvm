@@ -172,6 +172,17 @@ button.dangerline{background:transparent;color:var(--bad);border:1px solid var(-
   </div>
 </div>
 
+<div class="card win-only">
+  <h2>Show an app on another computer</h2>
+  <div class="hint">The app keeps running on this PC; its window appears on the other computer, where you can use it with that computer's keyboard and mouse. Or drag a window by its title bar to the strip at the screen edge. Closing it there stops showing it (the app stays open here).</div>
+  <div id="streams"></div>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+    <select id="wintarget" style="width:auto"></select>
+    <button class="ghost" id="winrefresh">Refresh list</button>
+  </div>
+  <div id="winlist" class="found"><div class="hint">Loading windows…</div></div>
+</div>
+
 <div class="card">
   <h2>Activity and security log <span class="badge" id="alertbadge" style="display:none"></span></h2>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -625,6 +636,40 @@ $('uninstall').onclick=async()=>{
   catch(e){ $('uninstall').disabled=false; say(e.message,false); alert(e.message); }
 };
 
+// ---- app windows shown on another computer (Windows)
+async function loadWindows(){
+  try{
+    const r=await api('/api/windows');
+    const sel=$('wintarget'), keep=sel.value; sel.textContent='';
+    (r.targets||[]).forEach(t=>{ const o=document.createElement('option'); o.value=t.name; o.textContent='Show on '+t.name; sel.appendChild(o); });
+    if(keep) sel.value=keep;
+    const box=$('winlist'); box.textContent='';
+    if(!(r.targets||[]).length){ const d=document.createElement('div'); d.className='hint'; d.textContent='Connect to another computer first (or let one control this PC).'; box.appendChild(d); sel.style.display='none'; return; }
+    sel.style.display='';
+    const showing=new Set((r.streams||[]).map(s=>s.window));
+    (r.windows||[]).filter(w=>!showing.has(w.id)).forEach(w=>{
+      const b=document.createElement('button'); b.className='founditem';
+      const n=document.createElement('b'); n.textContent=w.title; const s=document.createElement('span'); s.className='mono'; s.textContent=w.width?w.width+'×'+w.height:'minimized';
+      b.append(n,s);
+      b.onclick=async()=>{ try{ const x=await api('/api/stream',{window:w.id, to:$('wintarget').value||undefined}); say('Showing it on '+x.to,true); setTimeout(loadWindows,500); }catch(e){ say(e.message,false); } };
+      box.appendChild(b);
+    });
+    if(!box.children.length){ const d=document.createElement('div'); d.className='hint'; d.textContent='No other app windows open.'; box.appendChild(d); }
+  }catch(e){}
+}
+function renderStreams(s){
+  const box=$('streams'); if(!box) return;
+  const list=s.streams||[]; box.textContent='';
+  list.forEach(x=>{
+    const row=document.createElement('div'); row.className='peer';
+    const l=document.createElement('div'); l.textContent='Showing "'+x.title+'" on '+x.to;
+    const b=document.createElement('button'); b.className='danger'; b.textContent='Stop';
+    b.onclick=async()=>{ await api('/api/stream/stop',{id:x.id}); setTimeout(loadWindows,500); };
+    row.append(l,b); box.appendChild(row);
+  });
+}
+$('winrefresh').onclick=loadWindows;
+
 // ---- Linux: files dropped on this page (a normal browser can't tell us their path, so they are uploaded locally)
 function bindLinuxDrop(){
   document.addEventListener('dragover',e=>{ if(e.dataTransfer && [...e.dataTransfer.types].includes('Files')){ e.preventDefault(); document.body.classList.add('dropping'); } });
@@ -692,7 +737,7 @@ async function poll(){
     { const n=(s.sessions||[]).length, o=s.pairing_open_secs||0, listening = os==='linux' || (cfg&&cfg.receive);
       $('recvinfo').textContent = !listening ? 'Off. Nothing is listening.' :
         'On. ' + (n ? n+' computer(s) controlling this one right now. ' : 'No one is connected. ') + (o ? 'Pairing is open for '+o+'s (code '+(s.pairing_pin||'?')+').' : ''); }
-    renderWho(s); renderUpdate(s); wizardTick(s);
+    renderWho(s); renderUpdate(s); wizardTick(s); renderStreams(s);
     renderXfer(s);
     $('pausedbar').style.display = s.paused ? 'block' : 'none';
     $('estop').style.display = s.paused ? 'none' : '';
@@ -703,7 +748,7 @@ async function init(){
   try{
     const s=await api('/api/state'); os=s.os||'windows'; document.body.classList.add('os-'+os); document.title='SmoothKvm - '+(s.host||'');
     cfg=s.config; status=s.status||{}; fillSimple(); bindSimple(); render(); poll(); setInterval(poll,1500); pollEvents(); setInterval(pollEvents,1500);
-    if(os==='windows') loadAuto(); else bindLinuxDrop();
+    if(os==='windows'){ loadAuto(); loadWindows(); setInterval(loadWindows, 8000); } else bindLinuxDrop();
   }
   catch(e){ say('Could not load: '+e.message+'  (open this page with the SmoothKvm command)', false); }
 }

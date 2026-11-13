@@ -82,6 +82,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                     "game_active": capture_win::game_active_now(),
                     "paused": capture_win::is_paused(),
                     "transfer": crate::xfer::progress(),
+                    "streams": crate::stream_win::streams(),
                     "targets": crate::xfer::targets(),
                     "inbox": crate::xfer::inbox(),
                     "sessions": shared::sessions(),
@@ -194,6 +195,22 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 std::process::exit(0);
             });
+        }
+        // App windows that can be shown on another computer, and the ones being shown now.
+        ("/api/windows", Method::Get) => json_reply(req, 200, json!({"windows": crate::stream_win::list(), "streams": crate::stream_win::streams(), "targets": crate::xfer::targets()})),
+        ("/api/stream", Method::Post) => {
+            let Some(window) = data.get("window").and_then(|v| v.as_i64()) else {
+                return json_reply(req, 400, json!({"error": "which window?"}));
+            };
+            let to = data.get("to").and_then(|v| v.as_str()).map(String::from);
+            match crate::stream_win::start(window, to, ident.clone()) {
+                Ok(name) => json_reply(req, 200, json!({"to": name})),
+                Err(e) => json_reply(req, 400, json!({"error": e.to_string()})),
+            }
+        }
+        ("/api/stream/stop", Method::Post) => {
+            crate::stream_win::stop(data.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32);
+            json_reply(req, 200, json!({"ok": true}))
         }
         // Send local files/folders to another computer (runs in the background; progress is in /api/state).
         ("/api/send", Method::Post) => {

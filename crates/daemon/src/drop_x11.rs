@@ -5,8 +5,9 @@
 //! It is a plain X11 window speaking the XDND drag-and-drop protocol. KDE Plasma on Wayland passes drags from
 //! Wayland apps (Dolphin, the desktop, ...) to X11 windows, and libX11 is part of every desktop install, so it is
 //! loaded at runtime (dlopen) and SmoothKvm needs no GUI toolkit. If there is no X server it simply stays off.
-#![allow(non_snake_case, non_upper_case_globals)]
+#![allow(non_snake_case, non_upper_case_globals, unused_imports)]
 use crate::store::Identity;
+use crate::x11::{self, Atom, Display, Window, XEvent, XSetWindowAttributes, X};
 use crate::{shared, xfer};
 use kvm_protocol::Edge;
 use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void, CString};
@@ -15,141 +16,13 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-type Display = c_void;
-type Window = c_ulong;
-type Atom = c_ulong;
-
-#[repr(C)]
-struct XSetWindowAttributes {
-    background_pixmap: c_ulong,
-    background_pixel: c_ulong,
-    border_pixmap: c_ulong,
-    border_pixel: c_ulong,
-    bit_gravity: c_int,
-    win_gravity: c_int,
-    backing_store: c_int,
-    backing_planes: c_ulong,
-    backing_pixel: c_ulong,
-    save_under: c_int,
-    event_mask: c_long,
-    do_not_propagate_mask: c_long,
-    override_redirect: c_int,
-    colormap: c_ulong,
-    cursor: c_ulong,
-}
-
-/// XEvent is a union of 24 longs; we read the fields we need at their x86-64 offsets.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct XEvent {
-    pad: [c_long; 24],
-}
-
-impl XEvent {
-    fn kind(&self) -> c_int {
-        self.pad[0] as c_int
-    }
-    fn long(&self, i: usize) -> c_long {
-        self.pad[i]
-    }
-}
-
 // XClientMessageEvent: type(0) serial(1) send_event(2) display(3) window(4) message_type(5) format(6) data.l[0..5] (7..12)
 const CM_WINDOW: usize = 4;
 const CM_TYPE: usize = 5;
 const CM_DATA: usize = 7;
 // XSelectionEvent: ... requestor(4) selection(5) target(6) property(7) time(8)
 const SEL_PROPERTY: usize = 7;
-
-const Expose: c_int = 12;
-const ClientMessage: c_int = 33;
-const SelectionNotify: c_int = 31;
-const ExposureMask: c_long = 1 << 15;
-const CWOverrideRedirect: c_ulong = 1 << 9;
-const CWEventMask: c_ulong = 1 << 11;
-const CWBackPixel: c_ulong = 1 << 1;
-const PropModeReplace: c_int = 0;
-const XA_ATOM: Atom = 4;
-
-struct X {
-    _lib: *mut c_void,
-    XOpenDisplay: unsafe extern "C" fn(*const c_char) -> *mut Display,
-    XDefaultRootWindow: unsafe extern "C" fn(*mut Display) -> Window,
-    XDefaultScreen: unsafe extern "C" fn(*mut Display) -> c_int,
-    XDisplayWidth: unsafe extern "C" fn(*mut Display, c_int) -> c_int,
-    XDisplayHeight: unsafe extern "C" fn(*mut Display, c_int) -> c_int,
-    XCreateWindow: unsafe extern "C" fn(*mut Display, Window, c_int, c_int, c_uint, c_uint, c_uint, c_int, c_uint, *mut c_void, c_ulong, *mut XSetWindowAttributes) -> Window,
-    XInternAtom: unsafe extern "C" fn(*mut Display, *const c_char, c_int) -> Atom,
-    XChangeProperty: unsafe extern "C" fn(*mut Display, Window, Atom, Atom, c_int, c_int, *const u8, c_int) -> c_int,
-    XMapRaised: unsafe extern "C" fn(*mut Display, Window) -> c_int,
-    XUnmapWindow: unsafe extern "C" fn(*mut Display, Window) -> c_int,
-    XMoveResizeWindow: unsafe extern "C" fn(*mut Display, Window, c_int, c_int, c_uint, c_uint) -> c_int,
-    XPending: unsafe extern "C" fn(*mut Display) -> c_int,
-    XNextEvent: unsafe extern "C" fn(*mut Display, *mut XEvent) -> c_int,
-    XSendEvent: unsafe extern "C" fn(*mut Display, Window, c_int, c_long, *mut XEvent) -> c_int,
-    XConvertSelection: unsafe extern "C" fn(*mut Display, Atom, Atom, Atom, Window, c_ulong) -> c_int,
-    XGetWindowProperty: unsafe extern "C" fn(*mut Display, Window, Atom, c_long, c_long, c_int, Atom, *mut Atom, *mut c_int, *mut c_ulong, *mut c_ulong, *mut *mut u8) -> c_int,
-    XFree: unsafe extern "C" fn(*mut c_void) -> c_int,
-    XFlush: unsafe extern "C" fn(*mut Display) -> c_int,
-    XConnectionNumber: unsafe extern "C" fn(*mut Display) -> c_int,
-    XDefaultGC: unsafe extern "C" fn(*mut Display, c_int) -> *mut c_void,
-    XSetForeground: unsafe extern "C" fn(*mut Display, *mut c_void, c_ulong) -> c_int,
-    XDrawString: unsafe extern "C" fn(*mut Display, Window, *mut c_void, c_int, c_int, *const c_char, c_int) -> c_int,
-    XSetWindowBackground: unsafe extern "C" fn(*mut Display, Window, c_ulong) -> c_int,
-    XClearWindow: unsafe extern "C" fn(*mut Display, Window) -> c_int,
-}
-
-unsafe impl Send for X {}
-
-macro_rules! sym {
-    ($lib:expr, $name:ident) => {{
-        let n = CString::new(stringify!($name)).unwrap();
-        let p = libc::dlsym($lib, n.as_ptr());
-        if p.is_null() {
-            return None;
-        }
-        std::mem::transmute::<*mut c_void, _>(p)
-    }};
-}
-
-impl X {
-    fn load() -> Option<X> {
-        unsafe {
-            let name = CString::new("libX11.so.6").unwrap();
-            let lib = libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
-            if lib.is_null() {
-                return None;
-            }
-            Some(X {
-                _lib: lib,
-                XOpenDisplay: sym!(lib, XOpenDisplay),
-                XDefaultRootWindow: sym!(lib, XDefaultRootWindow),
-                XDefaultScreen: sym!(lib, XDefaultScreen),
-                XDisplayWidth: sym!(lib, XDisplayWidth),
-                XDisplayHeight: sym!(lib, XDisplayHeight),
-                XCreateWindow: sym!(lib, XCreateWindow),
-                XInternAtom: sym!(lib, XInternAtom),
-                XChangeProperty: sym!(lib, XChangeProperty),
-                XMapRaised: sym!(lib, XMapRaised),
-                XUnmapWindow: sym!(lib, XUnmapWindow),
-                XMoveResizeWindow: sym!(lib, XMoveResizeWindow),
-                XPending: sym!(lib, XPending),
-                XNextEvent: sym!(lib, XNextEvent),
-                XSendEvent: sym!(lib, XSendEvent),
-                XConvertSelection: sym!(lib, XConvertSelection),
-                XGetWindowProperty: sym!(lib, XGetWindowProperty),
-                XFree: sym!(lib, XFree),
-                XFlush: sym!(lib, XFlush),
-                XConnectionNumber: sym!(lib, XConnectionNumber),
-                XDefaultGC: sym!(lib, XDefaultGC),
-                XSetForeground: sym!(lib, XSetForeground),
-                XDrawString: sym!(lib, XDrawString),
-                XSetWindowBackground: sym!(lib, XSetWindowBackground),
-                XClearWindow: sym!(lib, XClearWindow),
-            })
-        }
-    }
-}
+use x11::{ClientMessage, CWBackPixel, CWEventMask, CWOverrideRedirect, Expose, ExposureMask, PropModeReplace, SelectionNotify, XA_ATOM};
 
 enum Cmd {
     Show { edge: Edge, frac: f32, name: String, idx: usize },
@@ -179,47 +52,13 @@ pub fn available() -> bool {
     TX.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
-/// Point libX11 at the desktop's X server (XWayland). A system service does not inherit the desktop session's
-/// environment, so ask the user's systemd for it, or fall back to the usual places.
-fn find_display() -> Option<(String, Option<String>)> {
-    if let Ok(d) = std::env::var("DISPLAY") {
-        if !d.is_empty() {
-            return Some((d, std::env::var("XAUTHORITY").ok()));
-        }
-    }
-    let uid = unsafe { libc::getuid() };
-    let run = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{uid}"));
-    let out = std::process::Command::new("systemctl")
-        .args(["--user", "show-environment"])
-        .env("XDG_RUNTIME_DIR", &run)
-        .env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={run}/bus"))
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    let env = String::from_utf8_lossy(&out.stdout).to_string();
-    let get = |k: &str| env.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).map(|v| v.trim_matches('\'').to_string());
-    let display = get("DISPLAY")?;
-    let auth = get("XAUTHORITY").or_else(|| {
-        // Plasma keeps XWayland's cookie in /run/user/<uid>/xauth_XXXXXX
-        std::fs::read_dir(&run).ok()?.flatten().map(|e| e.path()).find(|p| p.file_name().map(|n| n.to_string_lossy().starts_with("xauth_")).unwrap_or(false)).map(|p| p.to_string_lossy().to_string())
-    });
-    Some((display, auth))
-}
-
 /// Start the strip (does nothing on systems without X11/XWayland).
 pub fn start(ident: Arc<Identity>) {
     std::thread::spawn(move || {
         // wait for a desktop session (the service starts at boot, before anyone logs in)
         let (x, dpy) = loop {
-            if let (Some(x), Some((display, auth))) = (X::load(), find_display()) {
-                if let Some(a) = &auth {
-                    if std::env::var_os("XAUTHORITY").is_none() {
-                        std::env::set_var("XAUTHORITY", a);
-                    }
-                }
-                let name = CString::new(display).unwrap_or_default();
-                let dpy = unsafe { (x.XOpenDisplay)(name.as_ptr()) };
-                if !dpy.is_null() {
+            if let Some(x) = X::load() {
+                if let Some(dpy) = x11::open(&x) {
                     break (x, dpy);
                 }
             }
@@ -269,8 +108,7 @@ const THICK: i32 = 90;
 
 impl Strip {
     fn atom(x: &X, dpy: *mut Display, name: &str) -> Atom {
-        let n = CString::new(name).unwrap();
-        unsafe { (x.XInternAtom)(dpy, n.as_ptr(), 0) }
+        x.atom(dpy, name)
     }
 
     fn geometry(&self, edge: Edge, frac: f32) -> (i32, i32, u32, u32) {
@@ -348,7 +186,7 @@ impl Strip {
     }
 
     fn client_message(&self, to: Window, kind: Atom, data: [c_long; 5]) {
-        let mut ev = XEvent { pad: [0; 24] };
+        let mut ev = XEvent::zeroed();
         ev.pad[0] = ClientMessage as c_long;
         ev.pad[CM_WINDOW] = to as c_long;
         ev.pad[CM_TYPE] = kind as c_long;
@@ -458,7 +296,7 @@ fn run(x: X, dpy: *mut Display, rx: Receiver<Cmd>, ident: Arc<Identity>) {
         let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
         unsafe { libc::poll(&mut pfd, 1, 40) };
         while unsafe { (s.x.XPending)(dpy) } > 0 {
-            let mut ev = XEvent { pad: [0; 24] };
+            let mut ev = XEvent::zeroed();
             unsafe { (s.x.XNextEvent)(dpy, &mut ev) };
             match ev.kind() {
                 Expose => s.draw(),
@@ -560,7 +398,7 @@ mod tests {
             (x.XCreateWindow)(dpy, root, 0, 0, 10, 10, 0, 0, 1, std::ptr::null_mut(), 0, &mut attr)
         };
         let send = |kind: Atom, data: [c_long; 5]| {
-            let mut ev = XEvent { pad: [0; 24] };
+            let mut ev = XEvent::zeroed();
             ev.pad[0] = ClientMessage as c_long;
             ev.pad[CM_WINDOW] = strip as c_long;
             ev.pad[CM_TYPE] = kind as c_long;
@@ -572,9 +410,7 @@ mod tests {
             }
         };
         // become the owner of the drag selection, offering text/uri-list
-        type SetOwner = unsafe extern "C" fn(*mut Display, Atom, Window, c_ulong) -> c_int;
-        let set_owner: SetOwner = unsafe { std::mem::transmute(libc::dlsym(x._lib, b"XSetSelectionOwner\0".as_ptr() as *const c_char)) };
-        unsafe { set_owner(dpy, a("XdndSelection"), src, 0) };
+        unsafe { (x.XSetSelectionOwner)(dpy, a("XdndSelection"), src, 0) };
         send(a("XdndEnter"), [src as c_long, 5 << 24, a("text/uri-list") as c_long, 0, 0]);
         send(a("XdndPosition"), [src as c_long, 0, 0, 0, a("XdndActionCopy") as c_long]);
         send(a("XdndDrop"), [src as c_long, 0, 0, 0, 0]);
@@ -584,7 +420,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline && finished.is_none() {
             while unsafe { (x.XPending)(dpy) } > 0 {
-                let mut ev = XEvent { pad: [0; 24] };
+                let mut ev = XEvent::zeroed();
                 unsafe { (x.XNextEvent)(dpy, &mut ev) };
                 if ev.kind() == ClientMessage && ev.long(CM_TYPE) as Atom == a("XdndStatus") {
                     got_status = ev.long(CM_DATA + 1) & 1 == 1;
@@ -597,7 +433,7 @@ mod tests {
                     let (req, sel, target, prop, time) = (ev.long(5) as Window, ev.long(6), ev.long(7), ev.long(8) as Atom, ev.long(9));
                     unsafe {
                         (x.XChangeProperty)(dpy, req, prop, target as Atom, 8, PropModeReplace, uri.as_ptr(), uri.len() as c_int);
-                        let mut n = XEvent { pad: [0; 24] };
+                        let mut n = XEvent::zeroed();
                         n.pad[0] = SelectionNotify as c_long;
                         n.pad[4] = req as c_long;
                         n.pad[5] = sel;

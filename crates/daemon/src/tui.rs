@@ -40,6 +40,7 @@ const SENDER_CMDS: &[(&str, &str)] = &[
     ("/clipboard", "/clipboard on|off   share copied text with paired computers"),
     ("/send", "/send <file or folder>... [to <screen>]   send files (\"quote paths\" with spaces)"),
     ("/files", "/files on|off   accept files from other computers;  /files folder <path>|default   where they are saved"),
+    ("/window", "/window   list app windows;  /window <number> [to <screen>]   show it there;  /window stop"),
     ("/log", "/log [alerts]   recent activity and security alerts"),
     ("/status", "show screens, connections and settings"),
     ("/screens", "list your screens"),
@@ -280,6 +281,42 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             cfg["remotes"].as_array_mut().ok_or("bad config")?.push(json!({"name": a[0], "addr": addr, "edge": edge, "width": w, "height": h, "enabled": true}));
             set_config(c, &cfg)?;
             Ok(vec![(Kind::Good, format!("Added {} on the {}.", a[0], edge.to_lowercase())), (Kind::Dim, format!("Next: start pairing mode on that device, then  /pair {}", a[0]))])
+        }
+        ("/window", true) => {
+            let r = c.get("/api/windows")?;
+            let wins = r["windows"].as_array().cloned().unwrap_or_default();
+            match a.first().map(|s| s.to_lowercase()) {
+                None => {
+                    let mut out = vec![(Kind::Head, "App windows (show one with: window <number> [to <screen>])".to_string())];
+                    for s in r["streams"].as_array().cloned().unwrap_or_default() {
+                        out.push((Kind::Good, format!("  showing \"{}\" on {}", s["title"].as_str().unwrap_or("?"), s["to"].as_str().unwrap_or("?"))));
+                    }
+                    for (i, w) in wins.iter().enumerate() {
+                        out.push((Kind::Info, format!("{:>3}  {}", i + 1, w["title"].as_str().unwrap_or("?"))));
+                    }
+                    if wins.is_empty() {
+                        out.push((Kind::Dim, "no app windows open".into()));
+                    }
+                    Ok(out)
+                }
+                Some(s) if s == "stop" => {
+                    let streams = r["streams"].as_array().cloned().unwrap_or_default();
+                    for st in &streams {
+                        c.post("/api/stream/stop", &json!({"id": st["id"]}))?;
+                    }
+                    Ok(vec![(Kind::Good, format!("Stopped showing {} window(s).", streams.len()))])
+                }
+                Some(s) => {
+                    let n: usize = s.parse().map_err(|_| "usage: /window <number from the list> [to <screen>]".to_string())?;
+                    let w = wins.get(n.wrapping_sub(1)).ok_or("no window with that number (type: window)")?;
+                    let to = match (a.get(1), a.get(2)) {
+                        (Some(t), Some(name)) if t.eq_ignore_ascii_case("to") => Some(name.to_string()),
+                        _ => None,
+                    };
+                    let res = c.post("/api/stream", &json!({"window": w["id"], "to": to}))?;
+                    Ok(vec![(Kind::Good, format!("Showing \"{}\" on {}.", w["title"].as_str().unwrap_or("?"), res["to"].as_str().unwrap_or("?")))])
+                }
+            }
         }
         ("/move", _) => {
             let (name, side) = match (a.first(), a.get(1)) {

@@ -90,6 +90,15 @@ struct Watch {
     targets: Vec<xfer::Target>,
     targets_at: Option<Instant>,
     edge: Edge,
+    /// A window being dragged by its title bar (and where it was when the drag started).
+    moving: Option<(isize, RECT)>,
+}
+
+/// The window Windows is moving right now (title-bar drag), if any.
+unsafe fn window_being_moved() -> Option<HWND> {
+    let mut gi = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+    GetGUIThreadInfo(0, &mut gi).ok()?;
+    (gi.flags.0 & GUI_INMOVESIZE.0 != 0 && !gi.hwndMoveSize.0.is_null()).then_some(gi.hwndMoveSize)
 }
 
 static WATCH: Mutex<Option<Watch>> = Mutex::new(None);
@@ -99,12 +108,22 @@ unsafe fn tick(hwnd: HWND) {
         Ok(g) => g,
         Err(_) => return,
     };
-    let w = g.get_or_insert_with(|| Watch { press: None, dragging: false, released_at: None, targets: vec![], targets_at: None, edge: Edge::Right });
+    let w = g.get_or_insert_with(|| Watch { press: None, dragging: false, released_at: None, targets: vec![], targets_at: None, edge: Edge::Right, moving: None });
     let down = GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000 != 0;
     let mut p = POINT::default();
     let _ = GetCursorPos(&mut p);
     if down {
         w.released_at = None;
+        // remember a window being dragged by its title bar, and where it started
+        if w.moving.is_none() {
+            if let Some(mw) = window_being_moved() {
+                let mut r = RECT::default();
+                if GetWindowRect(mw, &mut r).is_ok() {
+                    w.moving = Some((mw.0 as isize, r));
+                    let _ = InvalidateRect(hwnd, None, true);
+                }
+            }
+        }
         match w.press {
             None => w.press = Some((Instant::now(), p)),
             Some((t, at)) if !w.dragging => {
@@ -128,6 +147,26 @@ unsafe fn tick(hwnd: HWND) {
         }
     } else {
         w.press = None;
+        // a window was let go over the strip: show it on that computer, and put it back where it was
+        if let Some((mw, start)) = w.moving.take() {
+            if w.dragging {
+                if let Some(i) = segment_at(hwnd, p) {
+                    let target = STRIP.lock().ok().and_then(|s| s.segments.get(i).map(|(t, _)| t.name.clone()));
+                    let mw_h = HWND(mw as *mut _);
+                    let _ = SetWindowPos(mw_h, None, start.left, start.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    if let Some(ident) = IDENT.get().cloned() {
+                        match crate::stream_win::start(mw as i64, target, ident) {
+                            Ok(to) => shared::info(&format!("Showing that window on {to}")),
+                            Err(e) => shared::warn(&format!("Could not show that window: {e}")),
+                        }
+                    }
+                    w.dragging = false;
+                    w.released_at = None;
+                    hide(hwnd);
+                    return;
+                }
+            }
+        }
         if w.dragging {
             // keep it up a moment so the drop message (sent after the button goes up) still lands
             let r = *w.released_at.get_or_insert_with(Instant::now);
@@ -215,7 +254,7 @@ unsafe fn paint(hwnd: HWND) {
         Ok(s) => (s.segments.clone(), s.hover),
         Err(_) => (vec![], None),
     };
-    let edge = WATCH.lock().ok().and_then(|g| g.as_ref().map(|w| w.edge)).unwrap_or(Edge::Right);
+    let (edge, moving_window) = WATCH.lock().ok().and_then(|g| g.as_ref().map(|w| (w.edge, w.moving.is_some()))).unwrap_or((Edge::Right, false));
     let vertical = matches!(edge, Edge::Left | Edge::Right);
     let font = CreateFontW(
         if vertical { 20 } else { 22 },
@@ -255,7 +294,8 @@ unsafe fn paint(hwnd: HWND) {
             Edge::Top => "↑",
             Edge::Bottom => "↓",
         };
-        let label: Vec<u16> = format!("{arrow}  Drop to send to {}", shared::clean(&t.name)).encode_utf16().collect();
+        let what = if moving_window { "Drop to show this window on" } else { "Drop to send to" };
+        let label: Vec<u16> = format!("{arrow}  {what} {}", shared::clean(&t.name)).encode_utf16().collect();
         if vertical {
             // rotated text is drawn from a start point, centred by measuring it first
             let mut sz = windows::Win32::Foundation::SIZE::default();
