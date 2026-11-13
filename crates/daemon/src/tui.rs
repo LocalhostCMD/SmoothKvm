@@ -59,6 +59,8 @@ const SENDER_CMDS: &[(&str, &str)] = &[
     ("/devices", "list paired devices"),
     ("/unpair", "/unpair <name>"),
     ("/open", "open the app window"),
+    ("/update", "check for a new version and install it"),
+    ("/uninstall", "/uninstall yes [wipe]   remove SmoothKvm from this computer"),
     ("/shutdown", "quit the background app"),
     ("/clear", "clear this screen"),
     ("/help", "show commands"),
@@ -75,10 +77,13 @@ const RECEIVER_CMDS: &[(&str, &str)] = &[
     ("/resume", "resume after an emergency stop"),
     ("/log", "/log [alerts]   recent activity and security alerts"),
     ("/status", "show connections and settings"),
-    ("/pair", "/pair [seconds] opens pairing (PIN shown here);  /pair <name> <PIN> pairs with a screen you added"),
+    ("/pair", "/pair  shows a big pairing code here;  /pair <name> <code> pairs with a screen you added"),
     ("/devices", "list paired devices"),
     ("/unpair", "/unpair <name>"),
     ("/display", "/display start|stop|status [WxH]"),
+    ("/app", "open the SmoothKvm window (the easy way to pair and change settings)"),
+    ("/update", "check for a new version and install it"),
+    ("/uninstall", "/uninstall yes [wipe]   remove SmoothKvm from this computer"),
     ("/stop", "EMERGENCY STOP: release every key and mouse button"),
     ("/clear", "clear this screen"),
     ("/help", "show commands"),
@@ -297,12 +302,42 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
             Ok(vec![(Kind::Info, format!("Pairing with {real}... watch the screens panel."))])
         }
         ("/pair", false) => {
-            let secs = a.first().and_then(|s| s.parse::<u64>().ok()).unwrap_or(120);
+            let secs = a.first().and_then(|s| s.parse::<u64>().ok()).unwrap_or(300);
             let r = c.post("/api/pair/open", &json!({"secs": secs}))?;
             Ok(vec![
-                (Kind::Head, format!("PAIRING OPEN for {}s  -  PIN: {}", r["secs"], r["pin"].as_str().unwrap_or("?"))),
-                (Kind::Dim, "Type this PIN on the controlling PC. It works once, and any wrong try cancels it.".into()),
+                (Kind::Head, format!("PAIRING CODE: {}  (shown big on the left, valid {}s)", r["pin"].as_str().unwrap_or("?"), r["secs"])),
+                (Kind::Dim, "On the other computer: + Add a computer -> Control another computer, pick this one, type the code. It works once.".into()),
             ])
+        }
+        ("/update", _) => {
+            let s = c.post("/api/update/check", &json!({}))?;
+            if let Some(e) = s["error"].as_str() {
+                return Err(format!("Could not check for updates: {e}"));
+            }
+            if !s["available"].as_bool().unwrap_or(false) {
+                return Ok(vec![(Kind::Good, format!("You have the newest version ({VERSION})."))]);
+            }
+            c.post("/api/update/apply", &json!({}))?;
+            Ok(vec![
+                (Kind::Head, format!("Updating to SmoothKvm {}...", s["latest"].as_str().unwrap_or("?"))),
+                (Kind::Dim, "It is downloaded, checked against the SmoothKvm signing key, installed, and SmoothKvm restarts by itself. Progress is shown at the top.".into()),
+            ])
+        }
+        ("/uninstall", _) => {
+            if a.first().map(|s| s.to_lowercase()) != Some("yes".into()) {
+                return Ok(vec![
+                    (Kind::Head, "Uninstall SmoothKvm from this computer?".into()),
+                    (Kind::Dim, "Type  uninstall yes  to remove it (settings are kept), or  uninstall yes wipe  to delete your settings and paired devices too.".into()),
+                ]);
+            }
+            let wipe = a.get(1).map(|s| s.eq_ignore_ascii_case("wipe")).unwrap_or(false);
+            let r = c.post("/api/uninstall", &json!({"confirm": "remove", "wipe": wipe}))?;
+            Ok(vec![(Kind::Good, r["detail"].as_str().unwrap_or("Removed.").to_string())])
+        }
+        #[cfg(unix)]
+        ("/app", _) => {
+            crate::linux_app::open_window().map_err(|e| e.to_string())?;
+            Ok(vec![(Kind::Good, "Opening the SmoothKvm window...".into())])
         }
         ("/display", true) => {
             if a.len() < 2 {
@@ -508,6 +543,8 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
 
 struct App {
     input: String,
+    /// Cursor position in the input line, counted in characters (not bytes).
+    cur: usize,
     history: Vec<String>,
     hist: Option<usize>,
     log: Vec<(Kind, String, u64)>,
@@ -577,9 +614,44 @@ impl App {
         });
     }
 
+    /// Replace the whole input line and put the cursor at its end.
+    fn set_input(&mut self, s: String) {
+        self.cur = s.chars().count();
+        self.input = s;
+    }
+
+    fn byte_at(&self, chars: usize) -> usize {
+        self.input.char_indices().nth(chars).map(|(b, _)| b).unwrap_or(self.input.len())
+    }
+
+    /// Start of the previous / next word from the cursor (for Ctrl+Left / Ctrl+Right).
+    fn word_left(&self) -> usize {
+        let cs: Vec<char> = self.input.chars().collect();
+        let mut i = self.cur.min(cs.len());
+        while i > 0 && cs[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !cs[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        i
+    }
+
+    fn word_right(&self) -> usize {
+        let cs: Vec<char> = self.input.chars().collect();
+        let mut i = self.cur.min(cs.len());
+        while i < cs.len() && !cs[i].is_whitespace() {
+            i += 1;
+        }
+        while i < cs.len() && cs[i].is_whitespace() {
+            i += 1;
+        }
+        i
+    }
+
     fn submit(&mut self) {
         let typed = self.input.trim().to_string();
-        self.input.clear();
+        self.set_input(String::new());
         self.hist = None;
         if typed.is_empty() {
             return;
@@ -603,7 +675,7 @@ impl App {
         }
         let typed = format!("/{}", self.input.trim_start_matches('/').to_lowercase());
         if let Some((c, _)) = self.cmds().iter().find(|(c, _)| c.starts_with(&typed)) {
-            self.input = format!("{} ", c.trim_start_matches('/'));
+            self.set_input(format!("{} ", c.trim_start_matches('/')));
         }
     }
 
@@ -620,28 +692,62 @@ impl App {
                 self.run_line("/stop".into());
             }
             KeyCode::F(3) => self.run_line("/resume".into()),
-            KeyCode::Char(c) if !ctrl => self.input.push(c),
-            KeyCode::Backspace => {
-                self.input.pop();
+            // Ctrl+A / Ctrl+E / Ctrl+U / Ctrl+W like a shell
+            KeyCode::Char('a') if ctrl => self.cur = 0,
+            KeyCode::Char('e') if ctrl => self.cur = self.input.chars().count(),
+            KeyCode::Char('u') if ctrl => {
+                let b = self.byte_at(self.cur);
+                self.input.replace_range(..b, "");
+                self.cur = 0;
             }
+            KeyCode::Char('w') if ctrl => {
+                let from = self.word_left();
+                let (a, b) = (self.byte_at(from), self.byte_at(self.cur));
+                self.input.replace_range(a..b, "");
+                self.cur = from;
+            }
+            KeyCode::Char(c) if !ctrl => {
+                let b = self.byte_at(self.cur);
+                self.input.insert(b, c);
+                self.cur += 1;
+            }
+            KeyCode::Backspace => {
+                if self.cur > 0 {
+                    let (a, b) = (self.byte_at(self.cur - 1), self.byte_at(self.cur));
+                    self.input.replace_range(a..b, "");
+                    self.cur -= 1;
+                }
+            }
+            KeyCode::Delete => {
+                if self.cur < self.input.chars().count() {
+                    let (a, b) = (self.byte_at(self.cur), self.byte_at(self.cur + 1));
+                    self.input.replace_range(a..b, "");
+                }
+            }
+            KeyCode::Left if ctrl => self.cur = self.word_left(),
+            KeyCode::Right if ctrl => self.cur = self.word_right(),
+            KeyCode::Left => self.cur = self.cur.saturating_sub(1),
+            KeyCode::Right => self.cur = (self.cur + 1).min(self.input.chars().count()),
+            KeyCode::Home => self.cur = 0,
+            KeyCode::End => self.cur = self.input.chars().count(),
             KeyCode::Enter => self.submit(),
-            KeyCode::Esc => self.input.clear(),
+            KeyCode::Esc => self.set_input(String::new()),
             KeyCode::Tab => self.complete(),
             KeyCode::Up => {
                 if !self.history.is_empty() {
                     let i = self.hist.map(|i| i.saturating_sub(1)).unwrap_or(self.history.len() - 1);
                     self.hist = Some(i);
-                    self.input = self.history[i].clone();
+                    self.set_input(self.history[i].clone());
                 }
             }
             KeyCode::Down => {
                 if let Some(i) = self.hist {
                     if i + 1 < self.history.len() {
                         self.hist = Some(i + 1);
-                        self.input = self.history[i + 1].clone();
+                        self.set_input(self.history[i + 1].clone());
                     } else {
                         self.hist = None;
-                        self.input.clear();
+                        self.set_input(String::new());
                     }
                 }
             }
@@ -746,11 +852,71 @@ fn status_chips(app: &App) -> Line<'static> {
             v.push(chip("GAME MODE ACTIVE", WARN));
         }
     }
+    let u = &s["update"];
+    if let Some(b) = u["busy"].as_str() {
+        v.push(Span::raw(" "));
+        v.push(chip(&b.to_uppercase(), ACCENT));
+    } else if u["available"].as_bool().unwrap_or(false) {
+        v.push(Span::raw(" "));
+        v.push(chip(&format!("UPDATE {} AVAILABLE - type update", u["latest"].as_str().unwrap_or("")), GOOD));
+    }
     Line::from(v)
 }
 
-fn pin_chip(pin: &str) -> Span<'static> {
-    Span::styled(format!(" {pin} "), Style::new().fg(Color::Black).bg(WARN).add_modifier(Modifier::BOLD))
+/// 3x5 pixel digits, drawn with half blocks so each digit is 3 columns by 3 rows: easy to read from a distance.
+const DIGITS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b001, 0b001, 0b001],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+
+/// The pairing code in big digits ("1234 5678"), 3 lines tall.
+fn big_code(pin: &str) -> Vec<Line<'static>> {
+    let mut rows = vec![String::from("  "), String::from("  "), String::from("  ")];
+    for (i, ch) in pin.chars().enumerate() {
+        let Some(d) = ch.to_digit(10) else { continue };
+        let g = DIGITS[d as usize];
+        if i == 4 {
+            for r in rows.iter_mut() {
+                r.push_str("  ");
+            }
+        }
+        for (line, r) in rows.iter_mut().enumerate() {
+            for col in (0..3).rev() {
+                let top = g[line * 2] >> col & 1 == 1;
+                let bottom = line * 2 + 1 < 5 && g[line * 2 + 1] >> col & 1 == 1;
+                r.push(match (top, bottom) {
+                    (true, true) => '█',
+                    (true, false) => '▀',
+                    (false, true) => '▄',
+                    _ => ' ',
+                });
+            }
+            r.push(' ');
+        }
+    }
+    rows.into_iter().map(|r| Line::styled(r, Style::new().fg(WARN).add_modifier(Modifier::BOLD))).collect()
+}
+
+/// "THIS PC  name" and its addresses, so you know what to type on the other computer.
+fn whoami_lines(s: &Value) -> Vec<Line<'static>> {
+    let mut out = vec![kv("THIS PC", s["host"].as_str().unwrap_or("?").to_string(), Color::White)];
+    let port = s["port"].as_u64().unwrap_or(24800);
+    for a in s["addrs"].as_array().cloned().unwrap_or_default() {
+        let a = a.as_str().unwrap_or("").to_string();
+        let label = if crate::discover::is_tailscale(&a) { "TAILSCALE" } else { "IP" };
+        let shown = if port != 24800 { format!("{a}:{port}") } else { a };
+        out.push(kv(label, shown, ACCENT));
+    }
+    out.push(Line::raw(""));
+    out
 }
 
 fn transfer_lines(s: &Value) -> Vec<Line<'static>> {
@@ -791,6 +957,14 @@ fn left_lines(app: &App) -> Vec<Line<'static>> {
     };
     let peers = s["peers"].as_array().map(|a| a.len()).unwrap_or(0);
     out.extend(transfer_lines(s));
+    let open = s["pairing_open_secs"].as_u64().unwrap_or(0);
+    if open > 0 {
+        out.push(heading(&format!("PAIRING CODE  ({}:{:02} left, works once)", open / 60, open % 60)));
+        out.extend(big_code(s["pairing_pin"].as_str().unwrap_or("")));
+        out.push(Line::styled("  type it on the other computer", Style::new().fg(DIM)));
+        out.push(Line::raw(""));
+    }
+    out.extend(whoami_lines(s));
     if s["mode"] == "receiver" {
         out.push(heading("CONNECTIONS"));
         let sessions = s["sessions"].as_array().cloned().unwrap_or_default();
@@ -805,19 +979,11 @@ fn left_lines(app: &App) -> Vec<Line<'static>> {
             ]));
         }
         out.push(Line::raw(""));
-        out.push(heading("PAIRING"));
-        let open = s["pairing_open_secs"].as_u64().unwrap_or(0);
-        if open > 0 {
-            out.push(Line::from(vec![
-                Span::raw("  PIN "),
-                pin_chip(s["pairing_pin"].as_str().unwrap_or("????????")),
-                Span::styled(format!("  {open}s left"), Style::new().fg(DIM)),
-            ]));
-            out.push(Line::styled("  one try, then it burns", Style::new().fg(DIM)));
-        } else {
-            out.push(Line::styled("  closed - type  pair  to open", Style::new().fg(DIM)));
+        if open == 0 {
+            out.push(heading("PAIRING"));
+            out.push(Line::styled("  closed - type  pair  to show a code", Style::new().fg(DIM)));
+            out.push(Line::raw(""));
         }
-        out.push(Line::raw(""));
         out.push(kv("DISPLAY", s["display"]["detail"].as_str().unwrap_or("?").to_string(), Color::White));
         out.push(kv("PAIRED", format!("{peers} device(s)"), Color::White));
         return out;
@@ -865,9 +1031,6 @@ fn left_lines(app: &App) -> Vec<Line<'static>> {
     if recv {
         let n = s["sessions"].as_array().map(|a| a.len()).unwrap_or(0);
         out.push(kv("", format!("{n} connected"), Color::White));
-        if s["pairing_open_secs"].as_u64().unwrap_or(0) > 0 {
-            out.push(Line::from(vec![Span::raw("  PIN "), pin_chip(s["pairing_pin"].as_str().unwrap_or("????????"))]));
-        }
     }
     out.push(kv("PAIRED", format!("{peers} device(s)"), Color::White));
     out
@@ -943,13 +1106,17 @@ fn draw(f: &mut Frame, app: &App) {
     // command hints, prompt, footer
     f.render_widget(Paragraph::new(Line::from(suggestions(app))), chips);
     let bg = Color::Rgb(22, 24, 38);
+    // A line longer than the box scrolls sideways so the cursor always stays visible.
+    let room = (input.width as usize).saturating_sub(14).max(1);
+    let skip = app.cur.saturating_sub(room);
+    let shown: String = app.input.chars().skip(skip).take(room).collect();
     let prompt = Line::from(vec![
         Span::styled(" smoothkvm", Style::new().fg(MAGENTA).bg(bg).add_modifier(Modifier::BOLD)),
         Span::styled(" ❯ ", Style::new().fg(ACCENT).bg(bg)),
-        Span::styled(app.input.clone(), Style::new().fg(Color::White).bg(bg)),
+        Span::styled(shown, Style::new().fg(Color::White).bg(bg)),
     ]);
     f.render_widget(Paragraph::new(prompt).style(Style::new().bg(bg)), input);
-    let cx = input.x + 13 + app.input.chars().count() as u16;
+    let cx = input.x + 13 + (app.cur - skip) as u16;
     f.set_cursor_position((cx.min(input.right().saturating_sub(1)), input.y));
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -981,7 +1148,7 @@ fn app_loop(term: &mut DefaultTerminal, client: Client, embedded: bool) -> io::R
             std::thread::sleep(Duration::from_millis(1000));
         });
     }
-    let mut app = App { input: String::new(), history: vec![], hist: None, log: vec![], state: None, offline: true, tx, client, quit: false, scroll: 0, busy: 0, started: Instant::now() };
+    let mut app = App { input: String::new(), cur: 0, history: vec![], hist: None, log: vec![], state: None, offline: true, tx, client, quit: false, scroll: 0, busy: 0, started: Instant::now() };
     app.say(
         Kind::Dim,
         if embedded {
@@ -1018,6 +1185,7 @@ extern "C" fn on_hangup(_: libc::c_int) {
 }
 
 pub fn run() -> io::Result<()> {
+    #[cfg_attr(windows, allow(unused_mut))]
     let mut embedded = false;
     if !ctl::alive() {
         #[cfg(windows)]
@@ -1031,8 +1199,8 @@ pub fn run() -> io::Result<()> {
             #[cfg(target_os = "linux")]
             crate::ensure_input_group();
             unsafe {
-                libc::signal(libc::SIGHUP, on_hangup as usize);
-                libc::signal(libc::SIGTERM, on_hangup as usize);
+                libc::signal(libc::SIGHUP, on_hangup as *const () as usize);
+                libc::signal(libc::SIGTERM, on_hangup as *const () as usize);
             }
             crate::start_embedded()?;
             embedded = true;
@@ -1051,7 +1219,18 @@ pub fn run() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::split_args;
+    use super::{big_code, split_args};
+
+    #[test]
+    fn big_code_is_three_lines_and_readable() {
+        let rows: Vec<String> = big_code("10").iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect();
+        assert_eq!(rows.len(), 3);
+        // "1" then "0" in half-block pixels
+        assert_eq!(rows[0], "  ▄█  █▀█ ");
+        assert_eq!(rows[1], "   █  █ █ ");
+        assert_eq!(rows[2], "  ▀▀▀ ▀▀▀ ");
+        assert_eq!(big_code("12345678")[0].spans[0].content.chars().count(), 2 + 8 * 4 + 2);
+    }
 
     #[test]
     fn quoted_paths_stay_together() {

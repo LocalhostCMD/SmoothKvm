@@ -1,8 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=SmoothKvm
+GenericName=Keyboard and mouse sharing
 Comment=One keyboard and mouse across all your computers
-Exec=SmoothKvm
+Exec=SmoothKvm app
 Icon=smoothkvm
-Terminal=true
-Categories=Utility;System;
+Terminal=false
+Categories=Utility;Network;
+Keywords=kvm;keyboard;mouse;share;pair;

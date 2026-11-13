@@ -1,0 +1,9 @@
+[Unit]
+Description=SmoothKvm updater (installs a signed update the app downloaded, or removes the app when you ask)
+
+[Service]
+Type=oneshot
+# Runs as root. It re-checks the update's Ed25519 signature, the file hash and that the version is newer than
+# the installed one, on its own copy of the files, before handing the package to apt.
+ExecStart=/usr/bin/SmoothKvm helper
+TimeoutStartSec=15min

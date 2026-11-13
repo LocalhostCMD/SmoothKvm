@@ -30,7 +30,8 @@ Only do this after verifying the thumbprint above through a channel you trust.
 
 ## Transparency
 - On Windows the app is never hidden: starting it always opens its window, and closing the window (or choosing Quit in the tray) stops everything - it releases held keys, closes every connection and listener, and exits. "Open when I sign in" opens the window too.
-- No telemetry, no accounts, no auto-update, no internet connections of its own. It only connects to the addresses you add, and listens only when you turn on "Let paired computers control this PC".
+- No telemetry, no accounts. Its only internet connection of its own is the update check (below), which can be turned off. Otherwise it only connects to the addresses you add, and on Windows listens only when you turn on "Let paired computers control this PC".
+- "Add a computer" sends a small discovery question as a LAN broadcast and directly to your online Tailscale peers. A computer answers (with its name, port and short device id) **only while it is showing a pairing code**, at most once per second per address. Being found grants nothing: pairing still needs the code.
 - The app shows an activity and security log (also `/log` in the terminal, saved to `events.log` in the settings folder). Pairing, new devices, sessions, emergency stops, removed devices, and refused or failed connection attempts are recorded; failed attempts are marked as security alerts and counted on the tray icon.
 
 - Linux note: the Linux program runs as a systemd service (`systemctl status smoothkvm`, `sudo systemctl stop smoothkvm`) and shows the same activity/security log in the terminal UI (`/log`). When it is controlling another computer it holds the keyboard and mouse exclusively, which needs membership of the `input` group; three quick Scroll Lock presses release everything.
@@ -46,7 +47,26 @@ Only do this after verifying the thumbprint above through a channel you trust.
   0700 folder, re-tightened if loosened. The Linux service runs with systemd sandbox options.
 - Dependencies are scanned with `cargo audit` (no known vulnerabilities in either shipped program).
 
+## Updates
+- About once a day (setting "Check for updates", on by default) the app downloads `latest.json` and `latest.json.sig`
+  from `https://github.com/LocalhostCMD/softwarekvm/releases/latest/download/` using the system's `curl` (HTTPS only).
+- `latest.json` lists the version and the SHA-256 of the Windows installer and the Linux package. It must carry a valid
+  **Ed25519 signature** by the SmoothKvm update key, whose public half is compiled into the app:
+  `80b11525677c912fc3adab838bc46ebea2d5b02b867f7952c63cb541db56ba44`. The private key is kept on the maintainer's PC,
+  outside the repository (`packaging/make-manifest.sh` signs with it).
+- Nothing is installed until you click Update. Then the file is downloaded, its SHA-256 must match the signed manifest,
+  and the version must be **newer** than the running one (an old, signed release cannot be replayed to downgrade you).
+- Windows: the installer runs silently for your user only (no admin) and reopens the app.
+- Linux: the app runs as your user and never gets root. It leaves the files in `/var/lib/smoothkvm/update` (owned by
+  you, mode 0700) and writes a request file; the root `smoothkvm-helper` systemd unit copies the files into a root-only
+  folder without following symlinks, verifies the signature, hash and version again, and only then runs `apt-get install`.
+  The same helper runs `apt-get remove smoothkvm` when you click Uninstall. Anything running as your user can therefore
+  ask for a *newer signed* SmoothKvm to be installed, or for SmoothKvm to be removed, and nothing else.
+
 ## Known limits
+- Whoever holds the update signing key can push an update to every copy that has update checks on. The key has no
+  passphrase and lives on one PC; losing it to an attacker would be serious. Turn update checks off if you prefer to
+  update by hand.
 - A paired controller is fully trusted: it can type anything on the machine it controls.
 - Code signing uses a self-issued certificate and a GPG key kept on the maintainer's PC (no passphrase). A certificate from
   a public authority (Azure Trusted Signing, SignPath Foundation for open source, or an OV/EV certificate) would remove

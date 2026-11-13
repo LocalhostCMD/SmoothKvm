@@ -42,6 +42,8 @@ Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; Value
 
 [Run]
 Filename: "{app}\SmoothKvmApp.exe"; Parameters: "open"; Description: "Open SmoothKvm now"; Flags: nowait postinstall skipifsilent
+; An update started from inside the app runs silently: reopen the app when it is done.
+Filename: "{app}\SmoothKvmApp.exe"; Parameters: "open"; Flags: nowait; Check: WizardSilent
 
 [UninstallRun]
 Filename: "{app}\SmoothKvm.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopSmoothKvm"

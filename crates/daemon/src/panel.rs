@@ -49,11 +49,18 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
     if !crate::httpd::authed(&req, token) {
         return json_reply(req, 401, json!({"error": "unauthorized"}));
     }
+    if path == "/api/stage" && method == Method::Post {
+        let (code, v) = crate::api::stage(&mut req);
+        return json_reply(req, code, v);
+    }
     let mut body = String::new();
     if method == Method::Post {
         let _ = req.as_reader().take(64 * 1024).read_to_string(&mut body);
     }
     let data: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    if let Some((code, v)) = crate::api::route(&path, &method, &data, ident) {
+        return json_reply(req, code, v);
+    }
     match (path.as_str(), method) {
         ("/api/events", Method::Get) => {
             let after = req.url().split("after=").nth(1).and_then(|s| s.split('&').next()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
@@ -66,10 +73,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                 .iter()
                 .map(|p| json!({"name": p.name, "key": p.key, "short": store::short(&p.key)}))
                 .collect();
-            json_reply(
-                req,
-                200,
-                json!({
+            let mut v = json!({
                     "mode": "sender",
                     "version": crate::VERSION,
                     "config": store::load_config(),
@@ -84,8 +88,9 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                     "pairing_open_secs": shared::pairing_remaining(),
                     "peers": peers,
                     "me": me,
-                }),
-            );
+            });
+            crate::api::extra_state(&mut v);
+            json_reply(req, 200, v);
         }
         ("/api/config", Method::Post) => match serde_json::from_value::<Config>(data) {
             Ok(cfg) => match cfg.validate() {
@@ -119,12 +124,6 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
             shared::request_pair(&str_field(&data, "name"), &pin);
             shared::info(&format!("Pairing with \"{}\" requested", str_field(&data, "name")));
             json_reply(req, 200, json!({"ok": true}));
-        }
-        // Let a new computer pair with THIS one (so it can control this PC): returns the PIN to type there.
-        ("/api/pair/open", Method::Post) => {
-            let secs = data.get("secs").and_then(|v| v.as_u64()).unwrap_or(120).clamp(10, 600);
-            let pin = shared::open_pairing(secs);
-            json_reply(req, 200, json!({"secs": secs, "pin": pin}));
         }
         ("/api/display", Method::Post) => {
             let name = str_field(&data, "name");

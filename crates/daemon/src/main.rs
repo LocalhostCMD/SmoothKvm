@@ -30,9 +30,12 @@ macro_rules! eprintln {
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+mod api;
 mod clip;
 mod ctl;
+mod discover;
 mod httpd;
+mod update;
 mod net;
 mod rctl;
 mod shared;
@@ -62,6 +65,8 @@ mod inject_win;
 mod capture_linux;
 #[cfg(target_os = "linux")]
 mod inject_linux;
+#[cfg(unix)]
+mod linux_app;
 #[cfg(windows)]
 mod panel;
 
@@ -288,7 +293,10 @@ fn serve(addr: &str, pair: bool, ctl_server: bool) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
     println!("SmoothKvm receiver {VERSION} listening on {addr} (device id {})", store::short(&secure::to_hex(&ident.public)));
     shared::info(&format!("Listening for paired controllers on {addr}. Unpaired connections are refused and logged as alerts."));
+    // Lets the "Add a computer" screen on the other machine find this one, but only while pairing is open.
+    discover::start_responder(listener.local_addr()?.port(), api::my_id(&ident));
     if ctl_server {
+        update::start_checker();
         let token = store::panel_token()?;
         let server = rctl::bind()?;
         let id = ident.clone();
@@ -418,9 +426,46 @@ fn send_cmd(args: &[String]) -> io::Result<()> {
     }
 }
 
+/// `SmoothKvm update`: check for a new version and install it through the running app.
+fn update_cmd() -> io::Result<()> {
+    if !ctl::alive() {
+        return Err(io::Error::new(io::ErrorKind::NotConnected, "SmoothKvm is not running (start it first)"));
+    }
+    let c = ctl::Client::new()?;
+    let err = |e: String| io::Error::new(io::ErrorKind::Other, e);
+    let s = c.post("/api/update/check", &serde_json::json!({})).map_err(err)?;
+    if let Some(e) = s["error"].as_str() {
+        return Err(err(format!("could not check for updates: {e}")));
+    }
+    if !s["available"].as_bool().unwrap_or(false) {
+        println!("You have the newest version ({VERSION}).");
+        return Ok(());
+    }
+    println!("Updating SmoothKvm {VERSION} -> {}...", s["latest"].as_str().unwrap_or("?"));
+    c.post("/api/update/apply", &serde_json::json!({})).map_err(err)?;
+    let mut last = String::new();
+    for _ in 0..1200 {
+        std::thread::sleep(Duration::from_millis(500));
+        let Ok(st) = c.get("/api/state") else {
+            println!("SmoothKvm is restarting with the new version.");
+            return Ok(());
+        };
+        let u = &st["update"];
+        if let Some(b) = u["busy"].as_str() {
+            if b != last {
+                println!("{b}");
+                last = b.to_string();
+            }
+        } else if let Some(e) = u["error"].as_str() {
+            return Err(err(e.to_string()));
+        }
+    }
+    Ok(())
+}
+
 fn usage() {
     eprintln!(
-        "SmoothKvm {VERSION}\n  SmoothKvm                 interactive terminal UI (type /help)\n  Windows:  open | start | stop | status | install [--autostart] | uninstall\n  Linux:    service | listen [--pair] | display start [WxH]|stop|status\n  Both:     send <files...> [--to <screen>] | view <addr> | test <addr> [--pin PIN] | --version"
+        "SmoothKvm {VERSION}\n  SmoothKvm                 interactive terminal UI (type /help)\n  SmoothKvm app             open the app window\n  Windows:  start | stop | status | install [--autostart] | uninstall\n  Linux:    service | listen [--pair] | display start [WxH]|stop|status\n  Both:     send <files...> [--to <screen>] | update | view <addr> | test <addr> [--pin PIN] | --version"
     );
 }
 
@@ -453,6 +498,12 @@ fn main() -> io::Result<()> {
         Some("install") => app::install(flag("--autostart")),
         #[cfg(windows)]
         Some("uninstall") => app::uninstall(),
+        #[cfg(unix)]
+        Some("open") | Some("panel") | Some("app") | Some("gui") => linux_app::run(),
+        // run by the smoothkvm-helper systemd unit (root) to install a downloaded, signed update
+        #[cfg(unix)]
+        Some("helper") => update::helper_main(),
+        Some("update") => update_cmd(),
         Some("service") => serve(&format!("0.0.0.0:{}", cfg.port), false, true),
         Some("listen") => {
             let addr = pos.first().map(|s| s.to_string()).unwrap_or_else(|| format!("0.0.0.0:{}", cfg.port));

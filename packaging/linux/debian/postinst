@@ -1,7 +1,16 @@
 #!/bin/sh
 set -e
 # Which account should the service run as? (it owns ~/.config/softwarekvm and any virtual display)
-U="${SMOOTHKVM_USER:-${SUDO_USER:-}}"
+# Keep the account chosen at the first install (automatic updates run as root without SUDO_USER).
+OLD=""
+if [ -f /etc/systemd/system/smoothkvm.service.d/user.conf ]; then
+  OLD="$(sed -n 's/^User=//p' /etc/systemd/system/smoothkvm.service.d/user.conf | head -n1)"
+fi
+if [ -z "$OLD" ] && [ -d /var/lib/smoothkvm ]; then
+  OLD="$(stat -c %U /var/lib/smoothkvm 2>/dev/null || true)"
+  [ "$OLD" = "UNKNOWN" ] && OLD=""
+fi
+U="${SMOOTHKVM_USER:-${OLD:-${SUDO_USER:-}}}"
 if [ -z "$U" ] || [ "$U" = "root" ]; then
   U="$(getent passwd | awk -F: '$3>=1000 && $3<60000 {print $1; exit}')"
 fi
@@ -9,6 +18,10 @@ if [ -z "$U" ]; then U=root; fi
 mkdir -p /etc/systemd/system/smoothkvm.service.d
 printf '[Service]\nUser=%s\nSupplementaryGroups=input\n' "$U" > /etc/systemd/system/smoothkvm.service.d/user.conf
 if [ "$U" != "root" ]; then usermod -aG input "$U" || true; fi
+# Where the app leaves downloaded updates and requests for the root helper (only that user and root).
+mkdir -p /var/lib/smoothkvm/update
+chown "$U" /var/lib/smoothkvm /var/lib/smoothkvm/update
+chmod 700 /var/lib/smoothkvm /var/lib/smoothkvm/update
 modprobe uinput 2>/dev/null || true
 if command -v udevadm >/dev/null 2>&1; then
   udevadm control --reload-rules 2>/dev/null || true
@@ -17,7 +30,8 @@ fi
 if [ -d /run/systemd/system ]; then
   systemctl daemon-reload || true
   systemctl enable smoothkvm.service >/dev/null 2>&1 || true
+  systemctl enable --now smoothkvm-helper.path >/dev/null 2>&1 || true
   systemctl restart smoothkvm.service || true
 fi
-echo "SmoothKvm installed. The service runs as '$U'. Type  SmoothKvm  to open it."
+echo "SmoothKvm installed. The service runs as '$U'. Open 'SmoothKvm' from the app menu (or type: SmoothKvm app)."
 exit 0

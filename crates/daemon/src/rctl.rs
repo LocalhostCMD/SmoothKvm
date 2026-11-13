@@ -55,10 +55,32 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
     if path == "/ping" {
         return json_reply(req, 200, json!({"ok": true}));
     }
+    // The app page (the same one the Windows app shows); it needs the token to do anything.
+    if path == "/" && method == Method::Get {
+        return reply(req, 200, "text/html; charset=utf-8", include_str!("panel.html").to_string());
+    }
     if !authed(&req, token) {
         return json_reply(req, 401, json!({"error": "unauthorized"}));
     }
+    if path == "/api/stage" && method == Method::Post {
+        let (code, v) = crate::api::stage(&mut req);
+        return json_reply(req, code, v);
+    }
     let data = if method == Method::Post { read_json(&mut req) } else { serde_json::Value::Null };
+    if let Some((code, v)) = crate::api::route(&path, &method, &data, ident) {
+        return json_reply(req, code, v);
+    }
+    // The app page polls with ?page=1 while it is open: when the window is closed (and SmoothKvm runs inside
+    // the app rather than as a service), the app stops.
+    #[cfg(unix)]
+    if req.url().contains("page=1") {
+        crate::linux_app::touch();
+    }
+    #[cfg(unix)]
+    if path == "/api/bye" {
+        crate::linux_app::bye();
+        return json_reply(req, 200, json!({"ok": true}));
+    }
     match (path.as_str(), method) {
         ("/api/events", Method::Get) => {
             let after = req.url().split("after=").nth(1).and_then(|s| s.split('&').next()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
@@ -71,10 +93,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
                 .map(|p| json!({"name": p.name, "key": p.key, "short": store::short(&p.key)}))
                 .collect();
             let (running, detail) = display_do(DisplayAction::Status);
-            json_reply(
-                req,
-                200,
-                json!({
+            let mut v = json!({
                     "mode": "receiver",
                     "version": VERSION,
                     "me": store::short(&to_hex(&ident.public)),
@@ -89,13 +108,9 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
                     "targets": crate::xfer::targets(),
                     "inbox": crate::xfer::inbox(),
                     "display": {"running": running, "detail": detail},
-                }),
-            );
-        }
-        ("/api/pair/open", Method::Post) => {
-            let secs = data.get("secs").and_then(|v| v.as_u64()).unwrap_or(120).clamp(10, 600);
-            let pin = shared::open_pairing(secs);
-            json_reply(req, 200, json!({"secs": secs, "pin": pin}));
+            });
+            crate::api::extra_state(&mut v);
+            json_reply(req, 200, v);
         }
         ("/api/peers/remove", Method::Post) => {
             let key = str_field(&data, "key");

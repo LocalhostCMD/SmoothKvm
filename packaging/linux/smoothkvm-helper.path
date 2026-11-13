@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for SmoothKvm update/uninstall requests from the app
+
+[Path]
+# The app (running as your user) writes this file when you click Update or Uninstall.
+PathExists=/var/lib/smoothkvm/request
+
+[Install]
+WantedBy=paths.target

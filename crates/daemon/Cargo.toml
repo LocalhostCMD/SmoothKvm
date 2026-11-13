@@ -14,6 +14,9 @@ serde_json.workspace = true
 toml.workspace = true
 getrandom.workspace = true
 tiny_http.workspace = true
+# Ed25519 signature check of update manifests (both already used by the Noise library; no new code pulled in)
+curve25519-dalek = { version = "4", default-features = false }
+sha2 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

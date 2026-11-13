@@ -116,9 +116,10 @@ pub fn run(_show: bool) -> io::Result<()> {
     }
     let open_item = MenuItem::new("Open SmoothKvm", true, None);
     let stop_item = MenuItem::new("Emergency stop", true, None);
+    let update_item = MenuItem::new("Check for updates", true, None);
     let quit_item = MenuItem::new("Quit SmoothKvm", true, None);
     let menu = Menu::new();
-    menu.append_items(&[&open_item, &stop_item, &PredefinedMenuItem::separator(), &quit_item])
+    menu.append_items(&[&open_item, &stop_item, &update_item, &PredefinedMenuItem::separator(), &quit_item])
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
@@ -131,6 +132,7 @@ pub fn run(_show: bool) -> io::Result<()> {
     let mut window: Option<(Window, WebView)> = None;
     let mut shown_paused = false;
     let mut shown_alerts = 0usize;
+    let mut shown_update: Option<String> = None;
     // Always open the window: the app is never running invisibly.
     post(UserEvent::Show);
     event_loop.run(move |event, target, flow| {
@@ -138,6 +140,17 @@ pub fn run(_show: bool) -> io::Result<()> {
         match event {
             // Keep the tray in sync (the triple-press shortcut can change the state too).
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                let upd = crate::update::available();
+                if upd != shown_update {
+                    update_item.set_text(match &upd {
+                        Some(v) => format!("Update to SmoothKvm {v}"),
+                        None => "Check for updates".to_string(),
+                    });
+                    if let Some(v) = &upd {
+                        let _ = tray.set_tooltip(Some(format!("SmoothKvm - version {v} is available")));
+                    }
+                    shown_update = upd;
+                }
                 let alerts = crate::shared::alert_count();
                 if alerts != shown_alerts {
                     shown_alerts = alerts;
@@ -175,6 +188,18 @@ pub fn run(_show: bool) -> io::Result<()> {
                     } else {
                         capture_win::Controller.emergency_stop();
                     }
+                } else if e.id == *update_item.id() {
+                    if crate::update::available().is_some() {
+                        // download, verify the signature, install silently, restart
+                        if let Err(e) = crate::update::apply_async() {
+                            crate::shared::warn(&format!("Update: {e}"));
+                        }
+                    } else {
+                        std::thread::spawn(|| {
+                            let _ = crate::update::check();
+                        });
+                    }
+                    post(UserEvent::Show);
                 } else if e.id == *quit_item.id() {
                     shutdown();
                     *flow = ControlFlow::Exit;

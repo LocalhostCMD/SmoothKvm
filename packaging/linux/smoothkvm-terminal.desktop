@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SmoothKvm Terminal
+Comment=SmoothKvm in a terminal (type help for commands)
+Exec=SmoothKvm
+Icon=smoothkvm
+Terminal=true
+Categories=Utility;Network;

@@ -34,6 +34,7 @@ pub fn start_backend() -> io::Result<()> {
     }
     apply(&cfg, &ctl, &ident);
     crate::drop_win::start(ident.clone());
+    crate::update::start_checker();
     std::thread::spawn(move || {
         let mut seen = store::config_mtime();
         loop {

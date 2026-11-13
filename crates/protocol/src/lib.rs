@@ -272,6 +272,8 @@ pub struct Config {
     pub file_drop: bool,
     /// Windows: which side of this screen the "drop here to send" strip appears on.
     pub drop_edge: Edge,
+    /// Look for a new SmoothKvm release about once a day (it is only installed when you click Update).
+    pub update_check: bool,
 }
 
 impl Default for Config {
@@ -286,6 +288,7 @@ impl Default for Config {
             animation: Animation::default(),
             file_drop: true,
             drop_edge: Edge::Right,
+            update_check: true,
         }
     }
 }

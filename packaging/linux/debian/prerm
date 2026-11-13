@@ -2,6 +2,10 @@
 set -e
 if [ -d /run/systemd/system ]; then
   systemctl stop smoothkvm.service || true
-  if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then systemctl disable smoothkvm.service >/dev/null 2>&1 || true; fi
+  if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    systemctl disable smoothkvm.service >/dev/null 2>&1 || true
+    # Only the watcher: the helper service may be the one running this removal, so it is not stopped here.
+    systemctl disable --now smoothkvm-helper.path >/dev/null 2>&1 || true
+  fi
 fi
 exit 0
