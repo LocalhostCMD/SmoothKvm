@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/protocol", "crates/daemon", "crates/launcher"]
 
 [workspace.package]
-version = "0.8.2"
+version = "0.8.3"
 edition = "2021"
 
 [workspace.dependencies]

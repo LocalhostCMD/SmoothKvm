@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const RELEASES: &str = "https://github.com/LocalhostCMD/softwarekvm/releases/latest/download";
-pub const RELEASE_PAGE: &str = "https://github.com/LocalhostCMD/softwarekvm/releases";
+pub const RELEASES: &str = "https://github.com/LocalhostCMD/SmoothKvm/releases/latest/download";
+pub const RELEASE_PAGE: &str = "https://github.com/LocalhostCMD/SmoothKvm/releases";
 /// Ed25519 public key of the SmoothKvm release key (the private key never leaves the maintainer's PC).
 const PUBLIC_KEY_HEX: &str = "80b11525677c912fc3adab838bc46ebea2d5b02b867f7952c63cb541db56ba44";
 #[cfg(unix)]
@@ -449,7 +449,7 @@ pub fn uninstall(wipe: bool) -> Result<String, String> {
         if wipe {
             // after this app has closed (the webview keeps files open until then)
             let d = cfg_dir.display().to_string();
-            if !d.contains('"') && d.to_lowercase().contains("softwarekvm") {
+            if !d.contains('"') && crate::store::is_config_dir_name(&cfg_dir) {
                 let _ = std::process::Command::new("cmd")
                     .args(["/C", &format!("ping -n 6 127.0.0.1 >nul & rmdir /S /Q \"{d}\"")])
                     .creation_flags(0x0800_0000 | 0x0000_0008)
@@ -464,7 +464,7 @@ pub fn uninstall(wipe: bool) -> Result<String, String> {
         if !Path::new(BASE).is_dir() {
             return Err("SmoothKvm was not installed from its .deb package. Remove it with: sudo apt remove smoothkvm".into());
         }
-        if wipe && cfg_dir.ends_with("softwarekvm") {
+        if wipe && crate::store::is_config_dir_name(&cfg_dir) {
             let _ = std::fs::remove_dir_all(&cfg_dir);
         }
         crate::shared::warn("Uninstalling SmoothKvm");

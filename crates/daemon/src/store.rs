@@ -6,14 +6,32 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+/// The settings folder: %APPDATA%\SmoothKvm on Windows, ~/.config/smoothkvm on Linux.
+/// Versions before 0.8.3 used "softwarekvm"; that folder is moved here the first time (keeping every pairing).
 pub fn config_dir() -> PathBuf {
-    #[cfg(windows)]
-    let base = std::env::var_os("APPDATA").map(PathBuf::from);
-    #[cfg(not(windows))]
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-    base.unwrap_or_else(|| PathBuf::from(".")).join("softwarekvm")
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        #[cfg(windows)]
+        let base = std::env::var_os("APPDATA").map(PathBuf::from);
+        #[cfg(not(windows))]
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+        let base = base.unwrap_or_else(|| PathBuf::from("."));
+        let new = base.join(if cfg!(windows) { "SmoothKvm" } else { "smoothkvm" });
+        let old = base.join("softwarekvm");
+        if !new.exists() && old.is_dir() && fs::rename(&old, &new).is_err() {
+            // still in use (another copy running): keep using it, it is moved next time
+            return old;
+        }
+        new
+    })
+    .clone()
+}
+
+/// True for a settings folder name (current or pre-0.8.3), used as a safety check before deleting one.
+pub fn is_config_dir_name(p: &std::path::Path) -> bool {
+    p.file_name().map(|n| n.to_string_lossy().to_lowercase()).map(|n| n == "smoothkvm" || n == "softwarekvm").unwrap_or(false)
 }
 
 /// Write a file that only the current user may read (secrets).

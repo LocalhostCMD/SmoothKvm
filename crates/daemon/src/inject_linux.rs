@@ -74,7 +74,7 @@ impl Uinput {
             ioctl(fd, UI_SET_RELBIT, rel as _)?;
         }
         let mut name = [0u8; 80];
-        let label = b"softwarekvm virtual input";
+        let label = b"SmoothKvm virtual input";
         name[..label.len()].copy_from_slice(label);
         let setup = UinputSetup { bustype: 0x06, vendor: 0x1234, product: 0x5678, version: 1, name, ff_effects_max: 0 };
         ioctl(fd, UI_DEV_SETUP, &setup as *const _ as libc::c_ulong)?;

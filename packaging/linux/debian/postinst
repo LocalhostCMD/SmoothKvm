@@ -1,6 +1,6 @@
 #!/bin/sh
 set -e
-# Which account should the service run as? (it owns ~/.config/softwarekvm and any virtual display)
+# Which account should the service run as? (it owns ~/.config/smoothkvm and any virtual display)
 # Keep the account chosen at the first install (automatic updates run as root without SUDO_USER).
 OLD=""
 if [ -f /etc/systemd/system/smoothkvm.service.d/user.conf ]; then

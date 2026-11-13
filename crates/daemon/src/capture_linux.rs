@@ -373,7 +373,8 @@ fn scanner() {
                         let keyboard = has(&keys, KEY_A);
                         let pointer = has(&rels, REL_X) && has(&rels, REL_Y);
                         // never read our own virtual device (that would loop input back)
-                        if name.to_lowercase().contains("softwarekvm") || !(keyboard || pointer) {
+                        let lower = name.to_lowercase();
+                        if lower.contains("smoothkvm virtual") || lower.contains("softwarekvm") || !(keyboard || pointer) {
                             continue;
                         }
                         if let Ok(mut g) = OPEN.lock() {

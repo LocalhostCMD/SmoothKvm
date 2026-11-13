@@ -49,7 +49,7 @@ Only do this after verifying the thumbprint above through a channel you trust.
 
 ## Updates
 - About once a day (setting "Check for updates", on by default) the app downloads `latest.json` and `latest.json.sig`
-  from `https://github.com/LocalhostCMD/softwarekvm/releases/latest/download/` using the system's `curl` (HTTPS only).
+  from `https://github.com/LocalhostCMD/SmoothKvm/releases/latest/download/` using the system's `curl` (HTTPS only).
 - `latest.json` lists the version and the SHA-256 of the Windows installer and the Linux package. It must carry a valid
   **Ed25519 signature** by the SmoothKvm update key, whose public half is compiled into the app:
   `80b11525677c912fc3adab838bc46ebea2d5b02b867f7952c63cb541db56ba44`. The private key is kept on the maintainer's PC,
