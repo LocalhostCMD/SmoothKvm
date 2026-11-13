@@ -128,7 +128,23 @@ fn enter(st: &mut State, i: usize, frac: f32) {
     st.send(Message::Input(InputEvent::MouseMoveRel { dx: snap.0, dy: snap.1 }));
     st.send(Message::Input(InputEvent::MouseMoveRel { dx: follow.0, dy: follow.1 }));
     WANT_GRAB.store(true, Ordering::SeqCst);
+    if st.cfg.animation.on_enter {
+        crate::fx_x11::play_at_edge(st.cfg.animation, r.edge, frac);
+    }
     notify(&format!("Controlling {}", r.name));
+}
+
+/// The effect for coming back from screen `active`, on the shared edge where the pointer re-appears.
+fn return_effect(st: &State) {
+    let Some(r) = st.active.and_then(|i| st.cfg.remotes.get(i)) else { return };
+    if !st.cfg.animation.on_leave {
+        return;
+    }
+    let frac = match r.edge {
+        Edge::Left | Edge::Right => st.vy as f32 / r.height.max(1) as f32,
+        Edge::Top | Edge::Bottom => st.vx as f32 / r.width.max(1) as f32,
+    };
+    crate::fx_x11::play_at_edge(st.cfg.animation, r.edge, frac);
 }
 
 /// The pointer touched `side` of this computer's screen (reported by KWin), `frac` along that edge.
@@ -207,6 +223,7 @@ fn move_remote(st: &mut State, dx: i32, dy: i32) {
         Edge::Bottom => st.vy < 0,
     };
     if back && st.buttons.is_empty() {
+        return_effect(st);
         leave(st);
         st.armed = false;
         // Nudge this computer's pointer off the edge so it is clearly back (and doesn't sit on the trigger).
@@ -235,6 +252,9 @@ fn toggle(st: &mut State) {
     let from = st.active.map(|a| a + 1).unwrap_or(0);
     let next = (from..st.senders.len()).find(|&i| st.connected.get(i).copied().unwrap_or(false));
     if st.active.is_some() {
+        if next.is_none() {
+            return_effect(st); // the hotkey brings you back here
+        }
         leave(st);
     }
     match next {

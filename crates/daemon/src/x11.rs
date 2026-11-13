@@ -122,7 +122,30 @@ pub struct X {
     pub XPutImage: unsafe extern "C" fn(*mut Display, Window, *mut c_void, *mut c_void, c_int, c_int, c_int, c_int, c_uint, c_uint) -> c_int,
     pub XDestroyImage: unsafe extern "C" fn(*mut c_void) -> c_int,
     pub XGetImage: unsafe extern "C" fn(*mut Display, Window, c_int, c_int, c_uint, c_uint, c_ulong, c_int) -> *mut c_void,
+    pub XCreateGC: unsafe extern "C" fn(*mut Display, Window, c_ulong, *mut c_void) -> *mut c_void,
+    pub XFreeGC: unsafe extern "C" fn(*mut Display, *mut c_void) -> c_int,
+    pub XMatchVisualInfo: unsafe extern "C" fn(*mut Display, c_int, c_int, c_int, *mut XVisualInfo) -> c_int,
+    pub XCreateColormap: unsafe extern "C" fn(*mut Display, Window, *mut c_void, c_int) -> c_ulong,
+    pub XFreeColormap: unsafe extern "C" fn(*mut Display, c_ulong) -> c_int,
 }
+
+#[repr(C)]
+pub struct XVisualInfo {
+    pub visual: *mut c_void,
+    pub visualid: c_ulong,
+    pub screen: c_int,
+    pub depth: c_int,
+    pub class: c_int,
+    pub red_mask: c_ulong,
+    pub green_mask: c_ulong,
+    pub blue_mask: c_ulong,
+    pub colormap_size: c_int,
+    pub bits_per_rgb: c_int,
+}
+
+pub const CWBorderPixel: c_ulong = 1 << 3;
+pub const CWColormap: c_ulong = 1 << 13;
+pub const TrueColor: c_int = 4;
 
 unsafe impl Send for X {}
 
@@ -206,6 +229,11 @@ impl X {
                 XPutImage: sym!(lib, XPutImage),
                 XDestroyImage: sym!(lib, XDestroyImage),
                 XGetImage: sym!(lib, XGetImage),
+                XCreateGC: sym!(lib, XCreateGC),
+                XFreeGC: sym!(lib, XFreeGC),
+                XMatchVisualInfo: sym!(lib, XMatchVisualInfo),
+                XCreateColormap: sym!(lib, XCreateColormap),
+                XFreeColormap: sym!(lib, XFreeColormap),
             })
         }
     }

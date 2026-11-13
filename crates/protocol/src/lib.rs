@@ -11,6 +11,18 @@ pub enum Edge {
     Bottom,
 }
 
+impl Edge {
+    /// The facing side: a screen on my Right edge has me on its Left edge.
+    pub fn opposite(self) -> Edge {
+        match self {
+            Edge::Left => Edge::Right,
+            Edge::Right => Edge::Left,
+            Edge::Top => Edge::Bottom,
+            Edge::Bottom => Edge::Top,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,

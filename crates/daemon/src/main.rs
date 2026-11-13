@@ -41,6 +41,7 @@ mod rctl;
 mod shared;
 mod store;
 mod tui;
+mod fx;
 mod wincodec;
 mod xfer;
 #[cfg(windows)]
@@ -76,6 +77,8 @@ mod edge_linux;
 mod drop_x11;
 #[cfg(target_os = "linux")]
 mod view_x11;
+#[cfg(target_os = "linux")]
+mod fx_x11;
 #[cfg(target_os = "linux")]
 mod x11;
 #[cfg(unix)]
@@ -265,6 +268,7 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
             if let Message::Enter { edge, .. } = &other {
                 shared::session_side(id, *edge);
             }
+            receiver_effect(&other);
             apply_message(other, &mut held, &mut clip::ClipSync::new())
         }
     }
@@ -293,6 +297,7 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
                 if let Message::Enter { edge, .. } = &m {
                     shared::session_side(id, *edge);
                 }
+                receiver_effect(&m);
                 if let Ok(mut c) = cs.lock() {
                     apply_message(m, &mut held, &mut c);
                 }
@@ -306,6 +311,29 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
     shared::info(&format!("{peer} stopped controlling this PC"));
     Ok(())
 }
+
+/// Being controlled from another computer: the screen-change effect where the pointer arrives here (Enter),
+/// and where it leaves again (Leave), with this PC's own effect settings.
+#[cfg(windows)]
+fn receiver_effect(m: &Message) {
+    match m {
+        Message::Enter { edge, pos } => {
+            let a = store::load_config().animation;
+            if a.on_enter {
+                fx_win::play_at_edge(a, edge.opposite(), *pos);
+            }
+        }
+        Message::Leave => {
+            let a = store::load_config().animation;
+            if let (true, Some(side)) = (a.on_leave, shared::controller_side()) {
+                fx_win::play_at_pointer_edge(a, side);
+            }
+        }
+        _ => {}
+    }
+}
+#[cfg(not(windows))]
+fn receiver_effect(_m: &Message) {}
 
 fn apply_message(m: Message, held: &mut Held, cs: &mut clip::ClipSync) {
     match m {

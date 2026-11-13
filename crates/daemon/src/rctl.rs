@@ -164,6 +164,21 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
             }
             json_reply(req, 200, json!({"paused": cap::is_paused()}))
         }
+        // "Preview on screen" for the screen-change effect
+        ("/api/effect/test", Method::Post) => {
+            let mut cfg = store::load_config();
+            if let Some(a) = data.get("animation").and_then(|a| serde_json::from_value::<kvm_protocol::Animation>(a.clone()).ok()) {
+                cfg.animation = a;
+            }
+            match cfg.validate() {
+                Ok(()) => {
+                    #[cfg(target_os = "linux")]
+                    crate::fx_x11::preview(cfg.animation);
+                    json_reply(req, 200, json!({"ok": true}))
+                }
+                Err(e) => json_reply(req, 400, json!({"error": e})),
+            }
+        }
         ("/api/release", Method::Post) => {
             crate::release_everything();
             json_reply(req, 200, json!({"ok": true}));
