@@ -43,9 +43,10 @@ pub fn start(show: bool) -> io::Result<bool> {
         std::fs::create_dir_all(store::config_dir())?;
         std::fs::File::create(store::config_dir().join("smoothkvm.log"))
     })?;
-    let _ = show; // the app always opens its window: it never runs hidden
+    // Started at sign-in: just the tray icon. Started by you: its window opens too.
+    let args: &[&str] = if show { &["daemon", "--show"] } else { &["daemon"] };
     Command::new(exe)
-        .args(["daemon", "--show"])
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)

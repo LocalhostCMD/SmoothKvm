@@ -446,6 +446,8 @@ pub struct Config {
     /// The ends of each edge (this many pixels from a corner) never switch: that is where close buttons,
     /// menus and the clock are.
     pub corner_px: u32,
+    /// Windows: closing the app window quits SmoothKvm. Off = it keeps running, with its icon in the tray.
+    pub close_quits: bool,
     /// Which built-in defaults this file has been brought up to (see `upgrade`). Missing in old files = 0.
     #[serde(default)]
     pub settings_rev: u32,
@@ -470,6 +472,7 @@ impl Default for Config {
             inbox_dir: String::new(),
             switch_delay_ms: 150,
             corner_px: 60,
+            close_quits: false,
             settings_rev: SETTINGS_REV,
         }
     }

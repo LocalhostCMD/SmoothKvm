@@ -17,8 +17,27 @@ fn from_rects(mut rects: Vec<[i32; 4]>) -> ScreenShape {
     ScreenShape { width: (r - l).clamp(100, 20000) as u32, height: (b - t).clamp(100, 20000) as u32, monitors }
 }
 
-#[cfg(windows)]
+/// This computer's monitor layout (looked up at most once every 10 seconds).
 pub fn layout() -> ScreenShape {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, ScreenShape)>> = Mutex::new(None);
+    if let Ok(g) = CACHE.lock() {
+        if let Some((t, s)) = g.as_ref() {
+            if t.elapsed() < Duration::from_secs(10) {
+                return s.clone();
+            }
+        }
+    }
+    let s = read_layout();
+    if let Ok(mut g) = CACHE.lock() {
+        *g = Some((Instant::now(), s.clone()));
+    }
+    s
+}
+
+#[cfg(windows)]
+fn read_layout() -> ScreenShape {
     use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
     use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
     unsafe extern "system" fn each(_m: HMONITOR, _dc: HDC, r: *mut RECT, data: LPARAM) -> BOOL {
@@ -35,7 +54,7 @@ pub fn layout() -> ScreenShape {
 }
 
 #[cfg(unix)]
-pub fn layout() -> ScreenShape {
+fn read_layout() -> ScreenShape {
     use std::process::{Command, Stdio};
     // KDE Plasma (Wayland or X11): exact layout in logical pixels
     if let Ok(o) = Command::new("kscreen-doctor").arg("-j").stdin(Stdio::null()).stderr(Stdio::null()).output() {

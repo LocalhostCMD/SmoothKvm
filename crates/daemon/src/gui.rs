@@ -4,7 +4,7 @@ use crate::{app, capture_win, daemon, store};
 use std::io;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tao::dpi::LogicalSize;
+use tao::dpi::{LogicalSize, PhysicalPosition};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::window::{Icon as WinIcon, Window, WindowBuilder};
@@ -20,6 +20,7 @@ enum UserEvent {
 }
 
 static PROXY: OnceLock<Mutex<EventLoopProxy<UserEvent>>> = OnceLock::new();
+static TOLD_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn post(ev: UserEvent) {
     if let Some(p) = PROXY.get() {
@@ -64,6 +65,57 @@ fn tray_icon(paused: bool) -> TrayIcon {
     TrayIcon::from_rgba(icon_rgba(paused), 32, 32).expect("icon")
 }
 
+/// The tray panel: a small borderless window above (or below) the tray icon, showing the compact view of
+/// the app page. It exists only while it is open and closes when you click anywhere else.
+fn open_flyout(target: &tao::event_loop::EventLoopWindowTarget<UserEvent>, ctx: &mut WebContext, at: PhysicalPosition<f64>) -> io::Result<(Window, WebView)> {
+    let err = |e: String| io::Error::new(io::ErrorKind::Other, e);
+    let window = WindowBuilder::new()
+        .with_title("SmoothKvm")
+        .with_inner_size(LogicalSize::new(330.0, 430.0))
+        .with_decorations(false)
+        .with_resizable(false)
+        .with_always_on_top(true)
+        .with_visible(false)
+        .with_window_icon(WinIcon::from_rgba(icon_rgba(false), 32, 32).ok())
+        .build(target)
+        .map_err(|e| err(e.to_string()))?;
+    {
+        use tao::platform::windows::WindowExtWindows;
+        let _ = window.set_skip_taskbar(true);
+    }
+    // next to the tray icon, kept inside the monitor it is on (the taskbar can be on any side)
+    let size = window.outer_size();
+    let (w, h) = (size.width as f64, size.height as f64);
+    let mon = target
+        .available_monitors()
+        .find(|m| {
+            let (p, s) = (m.position(), m.size());
+            at.x >= p.x as f64 && at.x < p.x as f64 + s.width as f64 && at.y >= p.y as f64 && at.y < p.y as f64 + s.height as f64
+        })
+        .or_else(|| target.primary_monitor());
+    let (mut x, mut y) = (at.x - w / 2.0, at.y - h - 14.0);
+    if let Some(m) = mon {
+        let (p, s) = (m.position(), m.size());
+        let (l, t, r, b) = (p.x as f64 + 8.0, p.y as f64 + 8.0, p.x as f64 + s.width as f64 - 8.0, p.y as f64 + s.height as f64 - 8.0);
+        if y < t {
+            y = at.y + 14.0; // taskbar at the top
+        }
+        x = x.clamp(l, (r - w).max(l));
+        y = y.clamp(t, (b - h - 44.0).max(t));
+    }
+    window.set_outer_position(PhysicalPosition::new(x, y));
+    let url = format!("http://127.0.0.1:{}/?view=tray#{}", crate::httpd::port(), store::panel_token()?);
+    let webview = WebViewBuilder::new_with_web_context(ctx)
+        .with_url(&url)
+        .with_navigation_handler(|u| u.starts_with(&format!("http://127.0.0.1:{}", crate::httpd::port())))
+        .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
+        .build(&window)
+        .map_err(|e| err(e.to_string()))?;
+    window.set_visible(true);
+    window.set_focus();
+    Ok((window, webview))
+}
+
 fn open_window(target: &tao::event_loop::EventLoopWindowTarget<UserEvent>, ctx: &mut WebContext) -> io::Result<(Window, WebView)> {
     let err = |e: String| io::Error::new(io::ErrorKind::Other, e);
     let window = WindowBuilder::new()
@@ -99,9 +151,9 @@ fn open_window(target: &tao::event_loop::EventLoopWindowTarget<UserEvent>, ctx: 
     Ok((window, webview))
 }
 
-pub fn run(_show: bool) -> io::Result<()> {
+pub fn run(show: bool) -> io::Result<()> {
     daemon::start_backend()?;
-    crate::shared::info(&format!("SmoothKvm {} started. It runs only while this window/tray icon is open; closing the window quits it.", crate::VERSION));
+    crate::shared::info(&format!("SmoothKvm {} started. It runs while its tray icon is there; quit from the tray menu.", crate::VERSION));
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let _ = PROXY.set(Mutex::new(event_loop.create_proxy()));
     {
@@ -130,11 +182,15 @@ pub fn run(_show: bool) -> io::Result<()> {
 
     let mut ctx = WebContext::new(Some(store::config_dir().join("webview")));
     let mut window: Option<(Window, WebView)> = None;
+    let mut flyout: Option<(Window, WebView)> = None;
+    let mut flyout_closed = Instant::now() - Duration::from_secs(5);
     let mut shown_paused = false;
     let mut shown_alerts = 0usize;
     let mut shown_update: Option<String> = None;
-    // Always open the window: the app is never running invisibly.
-    post(UserEvent::Show);
+    // Opened by you: show the window. Started at sign-in: just the tray icon (always visible there).
+    if show {
+        post(UserEvent::Show);
+    }
     event_loop.run(move |event, target, flow| {
         *flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(500));
         match event {
@@ -205,13 +261,42 @@ pub fn run(_show: bool) -> io::Result<()> {
                     *flow = ControlFlow::Exit;
                 }
             }
-            Event::UserEvent(UserEvent::Tray(TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. })) => {
+            // Click the tray icon: the small panel. Double-click: the full window.
+            Event::UserEvent(UserEvent::Tray(TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, position, .. })) => {
+                if flyout.is_some() {
+                    flyout = None;
+                } else if flyout_closed.elapsed() > Duration::from_millis(350) {
+                    // (a click on the icon while the panel is open first takes its focus away, which closes it)
+                    match open_flyout(target, &mut ctx, position) {
+                        Ok(f) => flyout = Some(f),
+                        Err(e) => {
+                            eprintln!("cannot open the tray panel: {e}");
+                            post(UserEvent::Show);
+                        }
+                    }
+                }
+            }
+            Event::UserEvent(UserEvent::Tray(TrayIconEvent::DoubleClick { button: MouseButton::Left, .. })) => {
+                flyout = None;
                 post(UserEvent::Show);
             }
-            // Closing the window QUITS the app: nothing keeps running in the background.
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
-                shutdown();
-                *flow = ControlFlow::Exit;
+            // The tray panel closes as soon as you click somewhere else.
+            Event::WindowEvent { window_id, event: WindowEvent::Focused(false), .. } if flyout.as_ref().map(|(w, _)| w.id()) == Some(window_id) => {
+                flyout = None;
+                flyout_closed = Instant::now();
+            }
+            Event::WindowEvent { window_id, event: WindowEvent::CloseRequested, .. } => {
+                if flyout.as_ref().map(|(w, _)| w.id()) == Some(window_id) {
+                    flyout = None;
+                } else if store::load_config().close_quits {
+                    shutdown();
+                    *flow = ControlFlow::Exit;
+                } else {
+                    // keeps working from the tray; the window (and its memory) goes away
+                    if window.take().is_some() && !TOLD_TRAY.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        crate::shared::info("The window was closed; SmoothKvm keeps running from its tray icon (right-click it to quit)");
+                    }
+                }
             }
             _ => {}
         }

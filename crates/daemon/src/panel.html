@@ -5,235 +5,299 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SmoothKvm</title>
 <style>
-:root{--bg:#f4f5f8;--card:#fff;--ink:#14171f;--mute:#667085;--line:#e2e5ec;--acc:#3b6df0;--acc2:#e8eeff;--ok:#1a7f4b;--warn:#b7791f;--bad:#c0362c}
-@media (prefers-color-scheme:dark){:root{--bg:#0e1015;--card:#171a22;--ink:#e8eaf1;--mute:#8d95a7;--line:#262b37;--acc:#6b93ff;--acc2:#1e2a49;--ok:#4cc38a;--warn:#e3b341;--bad:#ff7a70}}
+:root{--bg:#f3f4f8;--side:#ebedf3;--card:#fff;--ink:#12151c;--mute:#667085;--line:#e1e4ec;--acc:#4f6ef7;--acc-ink:#fff;--acc2:#e9edff;--ok:#16834a;--warn:#b7791f;--bad:#c9372c;--bad2:#fdecea;--shadow:0 1px 2px #0f172a0f,0 8px 24px #0f172a0d;--r:14px}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0f14;--side:#12151c;--card:#181b24;--ink:#e9ebf2;--mute:#8f97a9;--line:#272c39;--acc:#7790ff;--acc-ink:#0b0d12;--acc2:#1d2747;--ok:#4cc38a;--warn:#e3b341;--bad:#ff7a70;--bad2:#3a1a18;--shadow:0 1px 2px #0006,0 10px 30px #0005}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,"Segoe UI",sans-serif}
-main{max-width:900px;margin:0 auto;padding:22px 16px 90px}
-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
-h1{font-size:22px;margin:0}
-.sub{color:var(--mute);margin:0 0 18px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
-h2{font-size:15px;margin:0 0 12px}
-label{display:block;font-size:12.5px;color:var(--mute);margin:10px 0 4px}
-input[type=text],input[type=number],select{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-@media (max-width:600px){.row,.row3{grid-template-columns:1fr}}
-button{padding:8px 14px;border:0;border-radius:8px;background:var(--acc);color:#fff;font:inherit;cursor:pointer}
-button:disabled{opacity:.5;cursor:default}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.5 system-ui,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+#app{display:grid;grid-template-columns:232px 1fr;height:100%}
+#side{background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:18px 12px 14px;min-height:0}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 8px 16px;font-weight:650;font-size:16.5px;letter-spacing:-.01em}
+.logo{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,#4f6ef7,#8a5cf6);display:grid;place-items:center;flex:none}
+.logo i{width:9px;height:9px;border-radius:50%;background:#fff;display:block}
+.ver{font-size:11.5px;color:var(--mute);font-weight:500;margin-left:auto}
+nav{display:flex;flex-direction:column;gap:2px;overflow:auto;flex:1;min-height:0}
+nav button{display:flex;align-items:center;gap:10px;text-align:left;background:transparent;border:0;border-radius:9px;padding:8px 10px;cursor:pointer;color:var(--mute);font-weight:500}
+nav button:hover{background:color-mix(in srgb,var(--ink) 6%,transparent);color:var(--ink)}
+nav button.on{background:var(--card);color:var(--ink);box-shadow:var(--shadow)}
+nav button svg{width:17px;height:17px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+nav .n{margin-left:auto;font-size:11.5px;background:var(--bad);color:#fff;border-radius:99px;padding:0 7px;line-height:18px}
+.foot{border-top:1px solid var(--line);padding:12px 6px 0;margin-top:10px;font-size:12.5px;color:var(--mute)}
+.foot b{color:var(--ink);display:block;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ip{font-family:ui-monospace,Consolas,monospace;user-select:all}
+main{overflow:auto;min-width:0}
+.wrap{max-width:860px;margin:0 auto;padding:26px 28px 70px}
+.page{display:none}.page.on{display:block;animation:in .18s ease-out}
+@keyframes in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.page.on{animation:none}}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+h1{font-size:22px;margin:0;letter-spacing:-.02em}
+.lead{color:var(--mute);margin:2px 0 0;font-size:13.5px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-bottom:14px;box-shadow:var(--shadow)}
+h2{font-size:14.5px;margin:0 0 10px}
+label.f{display:block;font-size:12.5px;color:var(--mute);margin:10px 0 4px}
+input[type=text],input[type=number],select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);outline:none}
+input:focus,select:focus{border-color:var(--acc);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.row4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+button.b{padding:8px 14px;border:0;border-radius:9px;background:var(--acc);color:var(--acc-ink);cursor:pointer;font-weight:550}
+button.b:hover{filter:brightness(1.07)}button:disabled{opacity:.5;cursor:default}
 button.ghost{background:var(--acc2);color:var(--acc)}
 button.danger{background:transparent;color:var(--bad)}
+button.dangerline{background:transparent;color:var(--bad);border:1px solid var(--bad)}
+button.stop{background:var(--bad);color:#fff}
 .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
-.map{display:grid;grid-template-columns:1fr 1.2fr 1fr;grid-template-rows:74px 90px 74px;gap:10px;max-width:560px;margin:4px auto 10px}
-.slot{border:1.5px dashed var(--line);border-radius:10px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:13px;color:var(--mute);cursor:pointer;padding:6px;background:transparent;width:100%;height:100%}
-.slot.has{border-style:solid;border-color:var(--acc);background:var(--acc2);color:var(--ink)}
-.slot.sel{outline:2.5px solid var(--acc);outline-offset:2px}
-.slot.has{cursor:grab;touch-action:none}
-.slot.dragging{cursor:grabbing;position:relative;z-index:5;box-shadow:0 8px 24px #0004;opacity:.92}
-.slot.droptarget{border:2px solid var(--ok);background:color-mix(in srgb,var(--ok) 15%,transparent)}
-.me{grid-area:2/2;border:2px solid var(--mute);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:13px;text-align:center;background:var(--card)}
-.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--mute)}
-.dot.connected{background:var(--ok)}.dot.connecting{background:var(--warn)}.dot.not_paired{background:var(--warn)}.dot.offline{background:var(--bad)}
-.pill{font-size:12.5px;color:var(--mute)}
-.check{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:14px;color:var(--ink)}
-.check input{width:auto}
-#track{position:relative;height:30px;border-left:3px solid var(--mute);margin-top:12px;background:var(--bg);border-radius:0 6px 6px 0}
-#ball{position:absolute;width:14px;height:14px;border-radius:50%;background:var(--acc);top:8px;left:4px}
-.peer{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
-.mono{font-family:ui-monospace,Consolas,monospace;color:var(--mute);font-size:13px}
 .hint{font-size:12.5px;color:var(--mute);margin-top:6px}
-#msg{font-size:13px;margin-left:8px}
-.badge{font-size:12px;padding:3px 9px;border-radius:99px;background:var(--acc2);color:var(--acc)}
-.badge.on{background:#4a3a0a22;color:var(--warn)}
-#modal{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;padding:16px}
-#modal .box{background:var(--card);border-radius:14px;padding:22px;max-width:420px;width:100%;text-align:center}
-#code{font:600 34px ui-monospace,Consolas,monospace;letter-spacing:3px;margin:14px 0}
-button.stop{background:var(--bad);font-weight:600}
-#pausedbar{display:none;background:#c0362c22;border:1px solid var(--bad);color:var(--bad);padding:10px 14px;border-radius:10px;margin-bottom:14px}
-#pausedbar button{margin-left:10px}
-.row4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-#curve{width:100%;max-width:300px;height:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;margin-top:10px}
-.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-.chips button{padding:4px 10px;font-size:13px}
-.evlist{margin-top:10px;max-height:300px;overflow:auto;font:12.5px/1.5 ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.mono{font-family:ui-monospace,Consolas,monospace;color:var(--mute);font-size:12.5px}
+.pill{font-size:12.5px;color:var(--mute)}
+.badge{font-size:12px;padding:3px 10px;border-radius:99px;background:var(--acc2);color:var(--acc);white-space:nowrap}
+.badge.on{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}.badge.red{background:var(--bad2);color:var(--bad)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--mute);flex:none}
+.dot.connected{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}.dot.connecting,.dot.not_paired{background:var(--warn)}.dot.offline{background:var(--bad)}
+/* switches */
+.sw{display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-top:1px solid var(--line);cursor:pointer}
+.sw:first-of-type{border-top:0}
+.sw input{appearance:none;-webkit-appearance:none;flex:none;width:38px;height:22px;border-radius:99px;background:color-mix(in srgb,var(--mute) 45%,transparent);position:relative;cursor:pointer;margin:1px 0 0;transition:background .15s}
+.sw input::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 2px #0005}
+.sw input:checked{background:var(--acc)}.sw input:checked::after{transform:translateX(16px)}
+.sw span{display:block}.sw small{display:block;color:var(--mute);font-size:12.5px}
+/* banners */
+.bar{display:none;align-items:center;gap:10px;padding:10px 14px;border-radius:11px;margin-bottom:12px;border:1px solid}
+.bar.show{display:flex}.bar span{flex:1}
+#pausedbar,#alertbar{background:var(--bad2);border-color:var(--bad);color:var(--bad)}
+#updbar{background:var(--acc2);border-color:var(--acc)}
+/* monitor map */
+#map{position:relative;height:390px;border-radius:12px;background:
+  radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--mute) 28%,transparent) 1px,transparent 0) 0 0/18px 18px,var(--bg);border:1px solid var(--line);overflow:hidden;touch-action:none;user-select:none}
+.mon{position:absolute;border-radius:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;font-size:12.5px;line-height:1.25;overflow:hidden;padding:2px}
+.mon.me{background:var(--card);border:2px solid var(--mute);color:var(--mute)}
+.mon.me b{color:var(--ink);font-size:13px}
+.mon.rem{background:var(--acc2);border:2px solid var(--acc);cursor:grab;transition:box-shadow .15s}
+.mon.rem.fit{border-style:dashed}
+.mon.rem.sel{box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 35%,transparent)}
+.mon.rem.drag{cursor:grabbing;box-shadow:0 12px 30px #0005;z-index:5}
+.mon.rem.off{opacity:.55}
+.mon.rem b{display:flex;align-items:center;gap:6px;font-size:13px;max-width:100%}
+.mon.rem b span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mon small{color:var(--mute);font-size:11px}
+.mon .sub{position:absolute;border:1px solid color-mix(in srgb,var(--acc) 45%,transparent);border-radius:3px;pointer-events:none}
+.ghost-slot{position:absolute;border:1.5px dashed color-mix(in srgb,var(--mute) 60%,transparent);border-radius:7px;background:transparent;color:var(--mute);cursor:pointer;font-size:12px;display:grid;place-items:center;padding:0}
+.ghost-slot:hover{border-color:var(--acc);color:var(--acc);background:color-mix(in srgb,var(--acc) 8%,transparent)}
+.list .item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.list .item:first-child{border-top:0}
+.found{display:grid;gap:8px;margin:10px 0}
+.founditem{display:flex;justify-content:space-between;align-items:center;gap:10px;text-align:left;background:var(--bg);border:1px solid var(--line);padding:11px 14px;border-radius:11px;cursor:pointer}
+.founditem:hover{border-color:var(--acc)}.founditem b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#curve{width:100%;max-width:300px;height:auto;background:var(--bg);border:1px solid var(--line);border-radius:9px;margin-top:10px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center}.chips button{padding:4px 10px;font-size:13px}
+.evlist{margin-top:10px;max-height:420px;overflow:auto;font:12.5px/1.5 ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
 .ev{padding:4px 10px;border-top:1px solid var(--line);word-break:break-word}.ev:first-child{border-top:0}
 .ev .t{color:var(--mute);margin-right:8px}.ev.warn{color:var(--warn)}.ev.alert{color:var(--bad);font-weight:600}
-.badge.red{background:#c0362c22;color:var(--bad)}
-.honest{margin:0 0 6px;padding-left:20px;color:var(--ink)}.honest li{margin:5px 0}
-#alertbar{display:none;background:#c0362c22;border:1px solid var(--bad);color:var(--bad);padding:10px 14px;border-radius:10px;margin-bottom:14px}
-#alertbar button{margin-left:10px}
-.whoami{font-size:13.5px;color:var(--mute);margin:2px 0 14px}.whoami b{color:var(--ink)}.ip{font-family:ui-monospace,Consolas,monospace;color:var(--ink);background:var(--acc2);padding:1px 7px;border-radius:6px;margin-left:4px;user-select:all}
-#updbar{display:none;background:var(--acc2);border:1px solid var(--acc);color:var(--ink);padding:10px 14px;border-radius:10px;margin-bottom:14px}
-#updbar button{margin-left:10px}
-.overlay{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;padding:16px;z-index:10}
-.overlay .box{background:var(--card);border-radius:16px;padding:24px;max-width:560px;width:100%;max-height:calc(100vh - 32px);overflow:auto}
-.overlay h2{font-size:19px;margin-bottom:10px}
-.choices{display:grid;gap:12px;margin-top:14px}
-.choice{display:block;text-align:left;background:var(--bg);color:var(--ink);border:1.5px solid var(--line);padding:16px;border-radius:12px}
-.choice:hover{border-color:var(--acc)}.choice b{display:block;font-size:16px;margin-bottom:3px}.choice span{color:var(--mute);font-size:13.5px}
+.honest{margin:0;padding-left:20px}.honest li{margin:5px 0}
+.prog{height:8px;border-radius:4px;background:color-mix(in srgb,var(--mute) 25%,transparent);overflow:hidden;margin:6px 0}
+.prog div{height:100%;width:0;background:var(--acc);transition:width .3s}
+#toast{position:fixed;left:50%;bottom:20px;transform:translate(-50%,20px);background:var(--ink);color:var(--bg);padding:8px 16px;border-radius:99px;font-size:13px;opacity:0;pointer-events:none;transition:.2s;z-index:30;max-width:90vw}
+#toast.show{opacity:1;transform:translate(-50%,0)}#toast.err{background:var(--bad);color:#fff}
+/* wizard */
+.overlay{position:fixed;inset:0;background:#0b0d1299;backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;padding:16px;z-index:20}
+.overlay .box{background:var(--card);border-radius:18px;padding:24px;max-width:540px;width:100%;max-height:calc(100vh - 32px);overflow:auto;box-shadow:0 30px 80px #0006}
+.overlay h2{font-size:19px;margin-bottom:8px}
+.choices{display:grid;gap:10px;margin-top:14px}
+.choice{display:block;text-align:left;background:var(--bg);border:1.5px solid var(--line);padding:15px;border-radius:12px;cursor:pointer}
+.choice:hover{border-color:var(--acc)}.choice b{display:block;font-size:15.5px;margin-bottom:2px}.choice span{color:var(--mute);font-size:13px}
 .steps{padding-left:20px;margin:8px 0 12px}.steps li{margin:4px 0}
-.found{display:grid;gap:8px;margin:10px 0}
-.founditem{display:flex;justify-content:space-between;align-items:center;text-align:left;background:var(--bg);color:var(--ink);border:1.5px solid var(--acc);padding:14px 16px;border-radius:12px;font-size:16px}
-.founditem .mono{font-size:13px}
-.bigpin{font:700 64px/1.1 ui-monospace,Consolas,monospace;letter-spacing:6px;text-align:center;margin:18px 0 6px;color:var(--ink);user-select:all;white-space:nowrap}
-@media (max-width:600px){.bigpin{font-size:44px;letter-spacing:3px}}
-.codein{width:100%;font:700 40px ui-monospace,Consolas,monospace;letter-spacing:6px;text-align:center;padding:10px;border:2px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink);margin:8px 0}
-.codein:focus{outline:none;border-color:var(--acc)}
-.sidepick{display:grid;grid-template-columns:1fr 1.3fr 1fr;grid-template-rows:44px 54px 44px;gap:8px;max-width:340px;margin:10px auto}
-.sidepick .meb{grid-area:2/2;border:2px solid var(--mute);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12.5px;text-align:center}
-.sidepick button{background:var(--bg);color:var(--ink);border:1.5px dashed var(--line);font-size:13px;padding:4px}
+.bigpin{font:700 60px/1.1 ui-monospace,Consolas,monospace;letter-spacing:6px;text-align:center;margin:18px 0 6px;user-select:all;white-space:nowrap}
+.codein{width:100%;font:700 38px ui-monospace,Consolas,monospace !important;letter-spacing:6px;text-align:center;padding:10px;border:2px solid var(--line) !important;border-radius:12px !important;margin:8px 0}
+.sidepick{display:grid;grid-template-columns:1fr 1.3fr 1fr;grid-template-rows:42px 52px 42px;gap:8px;max-width:330px;margin:10px auto}
+.sidepick .meb{grid-area:2/2;border:2px solid var(--mute);border-radius:8px;display:grid;place-items:center;font-size:12.5px}
+.sidepick button{background:var(--bg);border:1.5px dashed var(--line);border-radius:8px;font-size:13px;cursor:pointer}
 .sidepick button.on{border:2px solid var(--acc);background:var(--acc2);color:var(--acc);font-weight:600}
 .sidepick button:disabled{opacity:.35}
-.center{justify-content:center}
+.center{justify-content:center;text-align:center}
 .okmsg{color:var(--ok);font-weight:600;margin-top:10px}.errmsg{color:var(--bad);margin-top:10px}
 details summary{cursor:pointer;color:var(--acc);font-size:13.5px;margin-top:6px}
 .os-linux .win-only{display:none !important}.os-windows .linux-only{display:none !important}
-body.dropping main{outline:3px dashed var(--acc);outline-offset:-8px;border-radius:16px}
-button.dangerline{background:transparent;color:var(--bad);border:1px solid var(--bad)}
+body.dropping main{outline:3px dashed var(--acc);outline-offset:-10px}
+/* small windows: the sidebar becomes a top strip */
+@media (max-width:720px){#app{grid-template-columns:1fr;grid-template-rows:auto 1fr}#side{flex-direction:row;align-items:center;padding:8px;border-right:0;border-bottom:1px solid var(--line);gap:6px}.brand{padding:0 6px}.brand .t,.ver,.foot div{display:none}nav{flex-direction:row}nav button span{display:none}.foot{border:0;margin:0;padding:0}.wrap{padding:16px 14px 60px}.row,.row3{grid-template-columns:1fr}.bigpin{font-size:42px;letter-spacing:3px}}
+/* tray panel */
+#tray{display:none}
+.view-tray #app{display:none}
+.view-tray #tray{display:flex;flex-direction:column;height:100%;padding:14px;gap:10px}
+body.view-tray{background:var(--card);border:1px solid var(--line);overflow:hidden}
+#tray .th{display:flex;align-items:center;gap:10px;font-weight:650}
+#tray .th .badge{margin-left:auto;font-weight:500}
+#tray .tl{flex:1;overflow:auto;min-height:0}
+#tray .ti{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px;background:var(--bg);margin-bottom:6px}
+#tray .ti b{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:550}
+#tray .ti small{color:var(--mute)}
+#tray .tb{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+#tray .tb button{padding:9px 8px}
+#tray .tb .wide{grid-column:1/3}
+#tray .sw{padding:6px 2px}
 </style>
 </head>
 <body>
-<main>
-<header><h1>SmoothKvm</h1><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end"><span class="badge win-only" id="game">Game mode: off</span><button id="addpc">+ Add a computer</button><button class="stop" id="estop">Emergency stop</button></div></header>
-<div class="whoami" id="whoami">&nbsp;</div>
-<div id="updbar"><span id="updtext"></span> <button id="updbarbtn">Update now</button></div>
-<div id="alertbar"><b>Security alert:</b> <span id="alerttext"></span> <button class="ghost" id="alertok">Dismiss</button></div>
-<div id="pausedbar"><b>Stopped.</b> Screen switching is paused and every held key and mouse button was released. <button class="ghost" id="resume">Resume</button></div>
-<p class="sub">One keyboard and mouse across all your screens. Everything between your computers is encrypted, and only paired devices are accepted.</p>
-
-<div class="card">
-  <h2>Screens</h2>
-  <div class="map" id="map"></div>
-  <div class="hint" style="text-align:center">Click a side to add a computer there. Click a screen to edit it, or <b>drag it to another side</b> to move it.</div>
-  <div class="hint linux-only" style="text-align:center"><b>To switch:</b> push the mouse off that side of the screen (KDE Plasma), or press <b>Scroll Lock</b>. Push back past the other computer's edge, or press Scroll Lock again, to come back. Three quick presses = emergency stop.</div>
-  <div id="detail"></div>
-</div>
-
-<div class="card">
-  <h2>Screen-change effect</h2>
-  <div class="hint" style="margin:-4px 0 6px">A colourful effect drawn on your screen when you cross to another screen (and on this one when another computer's mouse arrives here). It never moves your mouse.</div>
-  <div class="row3">
-    <div><label>Effect</label><select id="avisual"><option>None</option><option>Ripple</option><option>Glow</option><option>Sparks</option><option>Comet</option></select></div>
-    <div><label>Colours</label><select id="apal"><option>Rainbow</option><option>Ocean</option><option>Sunset</option><option>Neon</option><option>Mono</option></select></div>
-    <div><label>Motion</label><select id="astyle"><option>Bounce</option><option>Elastic</option><option>Slide</option><option>Overshoot</option><option>Spring</option><option>Custom</option></select></div>
+<div id="app">
+<aside id="side">
+  <div class="brand"><span class="logo"><i></i></span><span class="t">SmoothKvm</span><span class="ver" id="ver"></span></div>
+  <nav id="nav">
+    <button data-p="screens"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="13" height="10" rx="2"/><rect x="15" y="8" width="7" height="9" rx="1.5"/><path d="M6 18h6"/></svg><span>Screens</span></button>
+    <button data-p="devices"><svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.800-1-8-4.500-8-9V6z"/></svg><span>Devices</span></button>
+    <button data-p="files"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span>Files</span></button>
+    <button data-p="apps" class="win-only"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/></svg><span>App windows</span></button>
+    <button data-p="controls"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg><span>Controls</span></button>
+    <button data-p="effects"><svg viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.600 5.600l2 2M16.400 16.400l2 2M18.400 5.600l-2 2M7.600 16.400l-2 2"/></svg><span>Effects</span></button>
+    <button data-p="activity"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg><span>Activity</span><span class="n" id="navalerts" hidden></span></button>
+    <button data-p="about"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.500v.500"/></svg><span>Updates &amp; about</span><span class="n" id="navupd" hidden>1</span></button>
+  </nav>
+  <div class="foot">
+    <div><b id="hostname">&nbsp;</b><span id="hostips"></span></div>
+    <div class="btns" style="margin-top:10px"><button class="b stop" id="estop" style="flex:1">Emergency stop</button></div>
   </div>
-  <div class="row">
-    <div><label>Duration (ms)</label><input id="adur" type="number" min="100" max="2000" step="50"></div>
-    <div><label>Size (px)</label><input id="asize" type="number" min="40" max="600" step="10"></div>
-  </div>
-  <div id="customrow" style="display:none">
-    <label>Your own motion curve: cubic-bezier x1, y1, x2, y2 (x between 0 and 1; y can go below 0 or above 1 to overshoot)</label>
-    <div class="row4"><input id="c0" type="number" step="0.01" min="0" max="1"><input id="c1" type="number" step="0.01" min="-2" max="3"><input id="c2" type="number" step="0.01" min="0" max="1"><input id="c3" type="number" step="0.01" min="-2" max="3"></div>
-    <div class="chips"><span class="pill">Start from:</span><button class="ghost" data-c="0.2,0.9,0.2,1">Snappy</button><button class="ghost" data-c="0.25,0.1,0.25,1">Gentle</button><button class="ghost" data-c="0.34,1.56,0.64,1">Punchy</button><button class="ghost" data-c="0.68,-0.6,0.32,1.6">Whip</button></div>
-  </div>
-  <svg id="curve" viewBox="0 0 120 80"></svg>
-  <label class="check"><input id="aenter" type="checkbox"> Play when I move onto another screen</label>
-  <label class="check"><input id="aleave" type="checkbox"> Play when I come back to this PC</label>
-  <div class="btns"><button id="preview">Preview on screen</button></div>
+</aside>
+<main><div class="wrap">
+  <div class="bar" id="updbar"><span id="updtext"></span><button class="b" id="updbarbtn">Update now</button></div>
+  <div class="bar" id="alertbar"><span><b>Security alert:</b> <span id="alerttext"></span></span><button class="b ghost" id="alertok">Dismiss</button></div>
+  <div class="bar" id="pausedbar"><span><b>Stopped.</b> Screen switching is paused and every held key and mouse button was released.</span><button class="b" id="resume">Resume</button></div>
+
+  <section class="page" data-p="screens">
+    <div class="head"><div><h1>Screens</h1><p class="lead">Drag a screen to where it really sits.</p></div>
+      <div style="display:flex;gap:8px;align-items:center"><span class="badge win-only" id="game">Game mode: off</span><button class="b" id="addpc">+ Add a computer</button></div></div>
+    <div class="card">
+      <div id="map"></div>
+      <div class="hint">Drag a screen along or around this computer to place it; the pointer crosses exactly where the two touch. A dashed screen fills the whole side. Click a screen for its settings.</div>
+      <div class="hint linux-only"><b>To switch:</b> push the mouse off that side of the screen (KDE Plasma), or press <b>Scroll Lock</b>. Three quick presses = emergency stop.</div>
+      <div id="detail"></div>
+    </div>
+  </section>
+
+  <section class="page" data-p="devices">
+    <div class="head"><div><h1>Devices</h1><p class="lead">Only paired computers are accepted. Everything between them is encrypted.</p></div><button class="b ghost" id="allow">Show a pairing code</button></div>
+    <div class="card">
+      <h2>This computer</h2>
+      <div class="mono">Device id: <span id="me">…</span></div>
+      <div class="hint" id="recvinfo"></div>
+      <label class="sw win-only" style="margin-top:8px"><input id="recv" type="checkbox"><span>Let paired computers control this PC<small>Listens on the network (port 24800 by default). Also lets them find this PC again if its address changes.</small></span></label>
+    </div>
+    <div class="card"><h2>Paired devices</h2><div id="peers" class="list"></div></div>
+  </section>
+
+  <section class="page" data-p="files">
+    <div class="head"><div><h1>Files</h1><p class="lead">Drag files across the screen edge like onto a second monitor, or drop them on this window.</p></div></div>
+    <div class="card">
+      <div class="hint" style="margin-top:0">Files are copied over the encrypted connection to <b id="tgtnames">(no computer connected)</b>. <span class="linux-only">For folders from this window, use <span class="mono">SmoothKvm send &lt;folder&gt;</span>.</span></div>
+      <div id="xfer" style="display:none;margin-top:10px"><div class="hint" id="xferhead"></div><div class="prog"><div id="xferbar"></div></div><div class="hint" id="xferline"></div></div>
+      <label class="sw" style="margin-top:8px"><input id="filedrop" type="checkbox"><span>Accept files from my paired computers<small>They are saved, never opened or run. Nothing is ever overwritten.</small></span></label>
+      <label class="f">Save files I receive in</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="inboxdir" type="text" autocomplete="off" spellcheck="false" style="flex:1;min-width:220px" placeholder="Downloads/SmoothKvm">
+        <button class="b ghost" id="inboxpick">Choose…</button><button class="b ghost" id="inboxreset" title="Back to Downloads/SmoothKvm">Default</button>
+      </div>
+      <div class="hint">Currently: <span class="mono" id="inbox"></span></div>
+    </div>
+  </section>
+
+  <section class="page win-only" data-p="apps">
+    <div class="head"><div><h1>App windows</h1><p class="lead">Show an app from this PC on another computer. Or drag its window against the screen edge and hold.</p></div><button class="b ghost" id="winrefresh">Refresh</button></div>
+    <div class="card">
+      <div id="streams" class="list"></div>
+      <select id="wintarget" style="width:auto;margin-top:6px"></select>
+      <div id="winlist" class="found"><div class="hint">Loading windows…</div></div>
+      <div class="hint">The app keeps running here. Closing its window over there only stops showing it.</div>
+    </div>
+  </section>
+
+  <section class="page" data-p="controls">
+    <div class="head"><div><h1>Controls</h1><p class="lead">How switching between screens behaves.</p></div></div>
+    <div class="card">
+      <label class="sw"><input id="clip" type="checkbox"><span>Shared clipboard<small>Copy on one computer, paste on the other. Plain text up to 32 KB; never logged; password-manager copies are skipped.</small></span></label>
+      <label class="sw win-only"><input id="guard" type="checkbox"><span>Game mode<small>Never switch screens while a full-screen app or game is running.</small></span></label>
+      <label class="sw win-only"><input id="autostart" type="checkbox"><span>Start with Windows<small>Opens when you sign in, with its icon in the tray.</small></span></label>
+      <label class="sw win-only"><input id="closequits" type="checkbox"><span>Closing the window quits SmoothKvm<small>Off: it keeps working, with its icon in the tray. Quit from the tray menu.</small></span></label>
+    </div>
+    <div class="card">
+      <h2>Switching</h2>
+      <div class="row3">
+        <div><label class="f">Key that brings control back</label><select id="esc"><option value="71">Scroll Lock</option><option value="69">F12</option><option value="73">Insert</option><option value="228">Right Ctrl</option></select></div>
+        <div><label class="f">Rest on the edge before switching (ms)</label><input id="swdelay" type="number" min="0" max="2000" step="50"></div>
+        <div><label class="f">Never switch this close to a corner (px)</label><input id="swcorner" type="number" min="0" max="400" step="10"></div>
+      </div>
+      <div class="hint">So you can still reach close buttons, menus and the clock at the screen edges. Set both to 0 to switch the instant you touch an edge.</div>
+    </div>
+  </section>
+
+  <section class="page" data-p="effects">
+    <div class="head"><div><h1>Effects</h1><p class="lead">Drawn on screen when the pointer crosses to another screen. They never move your mouse.</p></div><button class="b" id="preview">Preview</button></div>
+    <div class="card">
+      <div class="row3">
+        <div><label class="f">Effect</label><select id="avisual"><option>None</option><option>Ripple</option><option>Glow</option><option>Sparks</option><option>Comet</option></select></div>
+        <div><label class="f">Colours</label><select id="apal"><option>Rainbow</option><option>Ocean</option><option>Sunset</option><option>Neon</option><option>Mono</option></select></div>
+        <div><label class="f">Motion</label><select id="astyle"><option>Bounce</option><option>Elastic</option><option>Slide</option><option>Overshoot</option><option>Spring</option><option>Custom</option></select></div>
+      </div>
+      <div class="row">
+        <div><label class="f">Duration (ms)</label><input id="adur" type="number" min="100" max="2000" step="50"></div>
+        <div><label class="f">Size (px)</label><input id="asize" type="number" min="40" max="600" step="10"></div>
+      </div>
+      <div id="customrow" style="display:none">
+        <label class="f">Your own curve: cubic-bezier x1, y1, x2, y2</label>
+        <div class="row4"><input id="c0" type="number" step="0.01" min="0" max="1"><input id="c1" type="number" step="0.01" min="-2" max="3"><input id="c2" type="number" step="0.01" min="0" max="1"><input id="c3" type="number" step="0.01" min="-2" max="3"></div>
+        <div class="chips"><span class="pill">Start from:</span><button class="b ghost" data-c="0.2,0.9,0.2,1">Snappy</button><button class="b ghost" data-c="0.25,0.1,0.25,1">Gentle</button><button class="b ghost" data-c="0.34,1.56,0.64,1">Punchy</button><button class="b ghost" data-c="0.68,-0.6,0.32,1.6">Whip</button></div>
+      </div>
+      <svg id="curve" viewBox="0 0 120 80"></svg>
+      <label class="sw" style="margin-top:8px"><input id="aenter" type="checkbox"><span>Play when I move onto another screen</span></label>
+      <label class="sw"><input id="aleave" type="checkbox"><span>Play when I come back to this computer</span></label>
+    </div>
+  </section>
+
+  <section class="page" data-p="activity">
+    <div class="head"><div><h1>Activity</h1><p class="lead">Everything SmoothKvm did, and anything it refused. Also saved to events.log.</p></div>
+      <div style="display:flex;gap:8px"><select id="evfilter" style="width:auto"><option value="all">Everything</option><option value="warn">Warnings and alerts</option><option value="alert">Security alerts only</option></select><button class="b ghost" id="evcopy">Copy</button></div></div>
+    <div class="card"><span class="badge" id="alertbadge" style="display:none"></span><div id="evlist" class="evlist"><div class="hint" style="padding:8px">Nothing yet.</div></div></div>
+  </section>
+
+  <section class="page" data-p="about">
+    <div class="head"><div><h1>Updates &amp; about</h1></div></div>
+    <div class="card">
+      <h2>Updates</h2>
+      <div id="updline">…</div><div class="hint" id="updnotes"></div>
+      <div class="btns"><button class="b" id="updgo" style="display:none">Update now</button><button class="b ghost" id="updcheck">Check for updates</button></div>
+      <label class="sw" style="margin-top:8px"><input id="updauto" type="checkbox"><span>Check once a day<small>Nothing is installed until you click Update, and only if it is signed with the SmoothKvm release key.</small></span></label>
+    </div>
+    <div class="card">
+      <h2>What this app does (and doesn't)</h2>
+      <ul class="honest">
+        <li class="win-only">It runs only while its tray icon is there. Quit from the tray menu (or turn on "Closing the window quits SmoothKvm").</li>
+        <li class="linux-only">It runs as a background service (<span class="mono">systemctl status smoothkvm</span>), so it keeps working when this window is closed.</li>
+        <li>No accounts, no telemetry. The only internet connection it makes by itself is the update check.</li>
+        <li>It listens on the network only for paired computers. Anything else is refused and shown as a security alert under Activity.</li>
+        <li>A computer can be found on the network only while it shows a pairing code, or by a computer already paired with it.</li>
+        <li>Everything between computers is encrypted. Your device key <span class="win-only">is encrypted by Windows and </span>never leaves this computer.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Remove SmoothKvm</h2>
+      <label class="sw"><input id="wipe" type="checkbox"><span>Also delete my settings, this computer's key and the paired devices</span></label>
+      <div class="btns"><button class="b dangerline" id="uninstall">Uninstall SmoothKvm</button></div>
+    </div>
+  </section>
+</div></main>
 </div>
 
-<div class="card">
-  <h2>Behavior</h2>
-  <label class="check win-only"><input id="guard" type="checkbox"> Game mode: never switch screens while a full-screen app or game is running</label>
-  <div class="row">
-    <div><label>Key that sends control back to this PC</label>
-      <select id="esc"><option value="71">Scroll Lock</option><option value="69">F12</option><option value="73">Insert</option><option value="228">Right Ctrl</option></select></div>
-  </div>
-  <div class="row">
-    <div><label>Rest on the edge this long before switching (ms)</label><input id="swdelay" type="number" min="0" max="2000" step="50"></div>
-    <div><label>Never switch this close to a corner (px)</label><input id="swcorner" type="number" min="0" max="400" step="10"></div>
-  </div>
-  <div class="hint">So you can still click close buttons, menus and the clock at the screen edges: corners never switch, and brushing past an edge doesn't either. Set both to 0 to switch the instant you touch an edge.</div>
-</div>
-
-<div class="card">
-  <h2>Control this computer from other computers</h2>
-  <label class="check win-only"><input id="recv" type="checkbox"> Let paired computers control this PC (listens on the port set in the config, default 24800)</label>
-  <label class="check"><input id="clip" type="checkbox"> Share copied text (clipboard) with paired computers (copy on one, paste on the other; on by default) - plain text only, up to 32 KB, never logged, password-manager copies are skipped.</label>
-  <div class="btns"><button class="ghost" id="allow">Let another computer pair with this one</button></div>
-  <div class="hint" id="recvinfo">Off. Nothing is listening.</div>
-</div>
-
-<div class="card">
-  <h2>Send files</h2>
-  <div class="hint"><span class="win-only">Drag files or folders onto this window, or start dragging anywhere and drop them on the strip that appears at the screen edge.</span><span class="linux-only">Drag files onto this window (for folders, type <span class="mono">SmoothKvm send &lt;folder&gt;</span> in a terminal).</span> They are copied over the encrypted connection to <span id="tgtnames">(no computer connected)</span>.</div>
-  <div class="row win-only">
-    <div><label>Drop strip appears on this side of the screen</label>
-      <select id="dropedge"><option value="Right">Right</option><option value="Left">Left</option><option value="Top">Top</option><option value="Bottom">Bottom</option></select></div>
-  </div>
-  <label class="check"><input id="filedrop" type="checkbox"> Accept files that my paired computers send me (never opened or run)</label>
-  <label>Save files I receive in this folder</label>
-  <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <input id="inboxdir" type="text" autocomplete="off" spellcheck="false" style="flex:1;min-width:220px" placeholder="Downloads/SmoothKvm">
-    <button class="ghost" id="inboxpick">Choose…</button>
-    <button class="ghost" id="inboxreset" title="Back to Downloads/SmoothKvm">Default</button>
-  </div>
-  <div class="hint">Files go to <span class="mono" id="inbox">Downloads\SmoothKvm</span>. A file with the same name is never overwritten (the new one becomes "name (2)").</div>
-  <div id="xfer" style="display:none;margin-top:10px">
-    <div class="hint" id="xferhead"></div>
-    <div style="height:8px;border-radius:4px;background:rgba(127,127,127,.25);overflow:hidden;margin:6px 0"><div id="xferbar" style="height:100%;width:0;background:#3b6df0;transition:width .3s"></div></div>
-    <div class="hint" id="xferline"></div>
+<div id="tray">
+  <div class="th"><span class="logo"><i></i></span><span id="t-host">SmoothKvm</span><span class="badge" id="t-state">…</span></div>
+  <div class="tl" id="t-list"></div>
+  <div id="t-xfer" style="display:none"><div class="hint" id="t-xferhead"></div><div class="prog"><div id="t-xferbar"></div></div></div>
+  <label class="sw"><input id="t-clip" type="checkbox"><span>Shared clipboard</span></label>
+  <label class="sw"><input id="t-files" type="checkbox"><span>Accept files</span></label>
+  <div class="tb">
+    <button class="b stop wide" id="t-stop">Emergency stop</button>
+    <button class="b ghost" id="t-open">Open settings</button>
+    <button class="b ghost" id="t-quit">Quit</button>
   </div>
 </div>
 
-<div class="card win-only">
-  <h2>Show an app on another computer</h2>
-  <div class="hint">The app keeps running on this PC; its window appears on the other computer, where you can use it with that computer's keyboard and mouse. Or drag a window by its title bar to the strip at the screen edge. Closing it there stops showing it (the app stays open here).</div>
-  <div id="streams"></div>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
-    <select id="wintarget" style="width:auto"></select>
-    <button class="ghost" id="winrefresh">Refresh list</button>
-  </div>
-  <div id="winlist" class="found"><div class="hint">Loading windows…</div></div>
-</div>
-
-<div class="card">
-  <h2>Activity and security log <span class="badge" id="alertbadge" style="display:none"></span></h2>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-    <select id="evfilter" style="width:auto"><option value="all">Everything</option><option value="warn">Warnings and alerts</option><option value="alert">Security alerts only</option></select>
-    <button class="ghost" id="evcopy">Copy log</button>
-    <span class="pill">Also saved to events.log in the SmoothKvm settings folder.</span>
-  </div>
-  <div id="evlist" class="evlist"><div class="hint">Nothing yet.</div></div>
-</div>
-
-<div class="card">
-  <h2>What this app does (and doesn't)</h2>
-  <ul class="honest">
-    <li class="win-only">It runs <b>only while this window or its tray icon is open</b>. Closing the window quits it completely.</li>
-    <li class="linux-only">It runs as a background service (<span class="mono">systemctl status smoothkvm</span>), so it keeps working when this window is closed.</li>
-    <li>No accounts, no telemetry. The only internet connection it makes by itself is the update check below (it downloads release information from GitHub; turn it off and it makes none). Updates install only when you click Update, and only if they are signed with the SmoothKvm release key.</li>
-    <li class="win-only">It listens on the network <b>only</b> if you turn on "Let paired computers control this PC". Anything that tries to connect without being paired is refused and shown as a security alert here.</li>
-    <li class="linux-only">It listens for paired computers. Anything that tries to connect without being paired is refused and shown as a security alert here.</li>
-    <li>"Add a computer" can find computers on your network (and on Tailscale), but a computer only answers while it is showing a pairing code. Pairing still needs that code.</li>
-    <li>Everything between computers is encrypted. Your device key <span class="win-only">is encrypted by Windows and </span>never leaves this computer.</li>
-  </ul>
-  <label class="check win-only"><input id="autostart" type="checkbox"> Open SmoothKvm when I sign in to Windows (the window opens, it never starts hidden)</label>
-</div>
-
-<div class="card">
-  <h2>Paired devices</h2>
-  <div class="mono">This computer's id: <span id="me">…</span></div>
-  <div id="peers"></div>
-</div>
-
-<div class="card">
-  <h2>Updates</h2>
-  <div id="updline">…</div>
-  <div class="hint" id="updnotes"></div>
-  <div class="btns"><button id="updgo" style="display:none">Update now</button><button class="ghost" id="updcheck">Check for updates</button></div>
-  <label class="check"><input id="updauto" type="checkbox"> Check for updates once a day (nothing is installed until you click Update)</label>
-</div>
-
-<div class="card">
-  <h2>Remove SmoothKvm</h2>
-  <div class="hint">Uninstalls SmoothKvm from this computer. Your other computers are not changed.</div>
-  <label class="check"><input id="wipe" type="checkbox"> Also delete my settings, this computer's key and the list of paired devices</label>
-  <div class="btns"><button class="dangerline" id="uninstall">Uninstall SmoothKvm</button></div>
-</div>
-<div><span class="pill">Changes save and apply automatically.</span><span id="msg"></span></div>
-</main>
+<div id="toast"></div>
 
 <div id="wiz" class="overlay"><div class="box">
   <div id="w-choose">
@@ -246,41 +310,40 @@ button.dangerline{background:transparent;color:var(--bad);border:1px solid var(-
   </div>
   <div id="w-find" hidden>
     <h2>Control another computer</h2>
-    <ol class="steps">
-      <li>On the other computer, open SmoothKvm, click <b>+ Add a computer</b> and choose <b>Let another computer control this one</b>.</li>
-      <li>It appears below. Click it.</li>
-    </ol>
+    <ol class="steps"><li>On the other computer, open SmoothKvm → <b>Devices</b> → <b>Show a pairing code</b>.</li><li>It appears below. Click it.</li></ol>
     <div id="w-list" class="found"></div>
     <details><summary>Not showing up? Type its address instead</summary>
-      <div class="hint">The address is shown at the top of SmoothKvm on that computer.</div>
-      <div style="display:flex;gap:8px;margin-top:6px"><input id="w-addr" type="text" placeholder="e.g. 192.168.1.20 or 100.83.46.95" autocomplete="off"><button id="w-addrgo">Next</button></div>
+      <div style="display:flex;gap:8px;margin-top:6px"><input id="w-addr" type="text" placeholder="e.g. 192.168.1.20 or 100.83.46.95" autocomplete="off"><button class="b" id="w-addrgo">Next</button></div>
     </details>
   </div>
   <div id="w-pin" hidden>
     <h2 id="w-pintitle">Pair</h2>
-    <div>Where is that screen, compared with this one?</div>
+    <div>Roughly where is that screen? (You can place it exactly on the map afterwards.)</div>
     <div class="sidepick" id="w-sides"></div>
     <div style="margin-top:8px">Type the code shown on it:</div>
     <input id="w-code" class="codein" maxlength="9" inputmode="numeric" autocomplete="off" placeholder="0000 0000">
-    <div class="btns center"><button id="w-pair">Pair</button></div>
-    <div id="w-status" class="hint" style="text-align:center"></div>
+    <div class="btns center"><button class="b" id="w-pair">Pair</button></div>
+    <div id="w-status" class="hint center"></div>
   </div>
   <div id="w-show" hidden>
     <h2>Let another computer control this one</h2>
-    <div>On the other computer, open SmoothKvm, click <b>+ Add a computer</b> → <b>Control another computer</b>, pick <b id="w-myname">this computer</b> and type this code:</div>
+    <div>On the other computer, open SmoothKvm → <b>+ Add a computer</b> → <b>Control another computer</b>, pick <b id="w-myname">this computer</b> and type this code:</div>
     <div class="bigpin" id="w-bigpin">···· ····</div>
-    <div class="hint" style="text-align:center" id="w-left"></div>
-    <div class="hint" style="text-align:center">Not showing up there? Type this address instead: <span class="ip mono" id="w-myaddr"></span></div>
-    <div id="w-hstatus" style="text-align:center"></div>
+    <div class="hint center" id="w-left"></div>
+    <div class="hint center">Not showing up there? Type this address instead: <span class="ip" id="w-myaddr"></span></div>
+    <div id="w-hstatus" class="center"></div>
   </div>
-  <div class="btns center" style="margin-top:18px"><button class="ghost" id="w-back">Back</button><button class="ghost" id="w-close">Close</button></div>
+  <div class="btns center" style="margin-top:18px"><button class="b ghost" id="w-back">Back</button><button class="b ghost" id="w-close">Close</button></div>
 </div></div>
 
 <script>
 const TOKEN = location.hash.slice(1);
+const TRAY = new URLSearchParams(location.search).get('view') === 'tray';
 const $ = id => document.getElementById(id);
-let cfg = null, status = {}, sel = -1, saveTimer = null;
+const el = (tag, cls, text) => { const e=document.createElement(tag); if(cls) e.className=cls; if(text!==undefined) e.textContent=text; return e; };
+let cfg = null, status = {}, sel = -1, saveTimer = null, os='windows', peersNow=[], lastState=null;
 const EDGES = ['Top','Left','Right','Bottom'];
+if(TRAY) document.documentElement.classList.add('view-tray'), document.body.classList.add('view-tray');
 
 async function api(path, body){
   const r = await fetch(path, {method: body!==undefined ? 'POST' : 'GET', headers: {'X-Token': TOKEN}, body: body!==undefined ? JSON.stringify(body) : undefined});
@@ -288,128 +351,163 @@ async function api(path, body){
   if(!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
-function say(t, ok){ const m=$('msg'); m.textContent=t; m.style.color = ok ? 'var(--ok)' : 'var(--bad)'; if(ok) setTimeout(()=>{ if(m.textContent===t) m.textContent=''; }, 2000); }
+let toastT=null;
+function say(t, ok){ const m=$('toast'); m.textContent=t; m.className='show'+(ok?'':' err'); clearTimeout(toastT); toastT=setTimeout(()=>m.className='', ok?1600:4500); }
+
+// ---- pages
+function go(p){
+  if(!document.querySelector('.page[data-p="'+p+'"]')) p='screens';
+  document.querySelectorAll('.page').forEach(s=>s.classList.toggle('on', s.dataset.p===p));
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on', b.dataset.p===p));
+  try{ localStorage.setItem('page', p); }catch(e){}
+  if(p==='screens' && cfg) renderMap();
+  if(p==='apps') loadWindows();
+}
+document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>go(b.dataset.p));
 
 // ---- autosave
-function touch(){ clearTimeout(saveTimer); saveTimer = setTimeout(save, 500); }
-async function save(){
-  try{ await api('/api/config', cfg); say('Saved', true); }catch(e){ say(e.message, false); }
-}
+function touch(){ clearTimeout(saveTimer); saveTimer = setTimeout(save, 400); }
+async function save(){ saveTimer=null; try{ await api('/api/config', cfg); }catch(e){ say(e.message, false); } }
+async function flushSave(){ if(saveTimer){ clearTimeout(saveTimer); await save(); } }
 
-// ---- screens
-function stOf(r){ return status[r.name] || {state:'connecting', detail:''}; }
-function stText(r){
-  const s=stOf(r);
-  return {connected:'Connected', connecting:'Connecting…', not_paired:'Not paired yet', offline:'Offline', disabled:'Disabled'}[s.state] || s.state;
+// ---- the map: this computer's monitors, and each other screen where it really sits
+function stOf(r){ return status[r.name] || {state: r.enabled===false ? 'disabled' : 'connecting', detail:''}; }
+function stText(r){ const s=stOf(r); return {connected:'Connected', connecting:'Connecting…', not_paired:'Not paired yet', offline:'Offline', disabled:'Disabled'}[s.state] || s.state; }
+function localScreen(){ return (lastState && lastState.local_screen) || {width:1920, height:1080, monitors:[[0,0,1920,1080]]}; }
+const sideways = e => e==='Left' || e==='Right';
+// A screen's rectangle in this desktop's pixels. offset null = it fills the whole side (drawn scaled to fit).
+function remoteRect(r, L){
+  // (a screen that fills the side is stretched along it only, so it never dwarfs the map)
+  const fit = r.offset==null, side=sideways(r.edge);
+  const kx = fit && !side ? L.width/r.width : 1, ky = fit && side ? L.height/r.height : 1;
+  const w=r.width*kx, h=r.height*ky, o = fit ? 0 : r.offset;
+  const x = r.edge==='Right' ? L.width : r.edge==='Left' ? -w : o;
+  const y = r.edge==='Bottom' ? L.height : r.edge==='Top' ? -h : o;
+  return {x, y, w, h, fit, kx, ky};
 }
+function shownRemotes(){ return cfg.remotes.map((r,i)=>({r,i})).filter(({r,i})=> r.enabled!==false || !cfg.remotes.some((o,j)=>j!==i && o.enabled!==false && o.edge===r.edge)); }
+let view=null, mapDrag=null;
+function mapView(){
+  const L=localScreen(), box=$('map'), cw=box.clientWidth||600, ch=box.clientHeight||390;
+  // the same margin on every side whatever the arrangement, so nothing jumps while you drag
+  let mx=L.width*0.3, my=L.height*0.5;
+  cfg.remotes.forEach(r=>{ mx=Math.max(mx, r.width); my=Math.max(my, r.height); });
+  const s=Math.min(cw/(L.width+2*mx*1.04), ch/(L.height+2*my*1.04));
+  return {L, s, ox:(cw-L.width*s)/2, oy:(ch-L.height*s)/2};
+}
+function place(e, v, x, y, w, h){ e.style.left=(v.ox+x*v.s)+'px'; e.style.top=(v.oy+y*v.s)+'px'; e.style.width=Math.max(8,w*v.s)+'px'; e.style.height=Math.max(8,h*v.s)+'px'; }
 function renderMap(){
-  const map=$('map'); map.innerHTML='';
-  const pos={Top:'1/2',Left:'2/1',Right:'2/3',Bottom:'3/2'};
-  const me=document.createElement('div'); me.className='me'; me.textContent='This PC (keyboard + mouse)'; map.appendChild(me);
-  EDGES.forEach(e=>{
-    const i=cfg.remotes.findIndex(r=>r.edge===e && r.enabled!==false) >= 0 ? cfg.remotes.findIndex(r=>r.edge===e && r.enabled!==false) : cfg.remotes.findIndex(r=>r.edge===e);
-    const b=document.createElement('button'); b.className='slot'; b.style.gridArea=pos[e]; b.dataset.edge=e;
-    if(i>=0){
-      const r=cfg.remotes[i]; b.classList.add('has'); if(i===sel) b.classList.add('sel');
-      const d=document.createElement('span'); d.className='dot '+stOf(r).state; b.appendChild(d);
-      b.appendChild(document.createTextNode(r.name));
-      b.title='Click to edit. Drag to another side to move it.';
-      dragToMove(b, i);
-    } else {
-      b.textContent='+ add a computer on the '+e.toLowerCase();
-      b.onclick=()=>openWizard('ctl', e);
-    }
-    map.appendChild(b);
+  if(mapDrag) return;
+  const box=$('map'); if(!box.clientWidth) return;
+  const v=view=mapView(), L=v.L; box.textContent='';
+  const mons=(L.monitors&&L.monitors.length)?L.monitors:[[0,0,L.width,L.height]];
+  mons.forEach((m,i)=>{ const d=el('div','mon me'); place(d,v,m[0],m[1],m[2],m[3]); if(i===0){ d.appendChild(el('b','', (lastState&&lastState.host)||'This computer')); if(m[3]*v.s>58) d.appendChild(el('small','', 'keyboard + mouse')); } else d.append(el('small','', m[2]+'×'+m[3])); box.appendChild(d); });
+  const used=new Set();
+  shownRemotes().forEach(({r,i})=>{
+    used.add(r.edge);
+    const q=remoteRect(r,L), d=el('div','mon rem'+(q.fit?' fit':'')+(i===sel?' sel':'')+(r.enabled===false?' off':''));
+    place(d,v,q.x,q.y,q.w,q.h);
+    const shape=(lastState&&lastState.screens||{})[r.name];
+    if(shape && shape.monitors && shape.monitors.length>1) shape.monitors.forEach(m=>{ const sub=el('div','sub'); sub.style.left=(m[0]*q.kx*v.s)+'px'; sub.style.top=(m[1]*q.ky*v.s)+'px'; sub.style.width=(m[2]*q.kx*v.s)+'px'; sub.style.height=(m[3]*q.ky*v.s)+'px'; d.appendChild(sub); });
+    const b=el('b'); b.append(el('span','dot '+stOf(r).state), el('span','', r.name)); d.append(b, el('small','', r.width+'×'+r.height+(q.fit?' · fills side':'')));
+    d.title=stText(r)+' — drag to place, click for settings';
+    dragMon(d, i); box.appendChild(d);
+  });
+  if(cfg.remotes.length<4) EDGES.filter(e=>!used.has(e)).forEach(e=>{
+    const g=el('button','ghost-slot','+'), a=Math.max(Math.min(L.width,L.height)*0.42, 36/v.s), gap=10/v.s;
+    const x = e==='Right' ? L.width+gap : e==='Left' ? -a-gap : (L.width-a)/2, y = e==='Bottom' ? L.height+gap : e==='Top' ? -a-gap : (L.height-a)/2;
+    place(g,v,x,y,a,a); g.title='Add a computer on the '+e.toLowerCase(); g.onclick=()=>openWizard('ctl', e); box.appendChild(g);
   });
 }
-// Drag a screen to another side of "This PC" to move it there (swaps with a screen already there).
-// Pointer events (not HTML drag-and-drop) so it works the same in the Windows app and in a browser.
-let mapDrag=null;
-function dragToMove(b, i){
-  b.onpointerdown=e=>{ if(e.button!==0) return; mapDrag={i, x:e.clientX, y:e.clientY, moving:false, el:b}; b.setPointerCapture(e.pointerId); };
-  b.onpointermove=e=>{
-    if(!mapDrag || mapDrag.el!==b) return;
-    if(!mapDrag.moving && Math.hypot(e.clientX-mapDrag.x, e.clientY-mapDrag.y) > 6){ mapDrag.moving=true; b.classList.add('dragging'); }
-    if(!mapDrag.moving) return;
-    b.style.transform='translate('+(e.clientX-mapDrag.x)+'px,'+(e.clientY-mapDrag.y)+'px)';
-    document.querySelectorAll('.slot').forEach(s=>s.classList.remove('droptarget'));
-    const t=slotAt(e.clientX, e.clientY, b); if(t && t!==b) t.classList.add('droptarget');
-  };
-  b.onpointerup=e=>{
-    const d=mapDrag; mapDrag=null; if(!d || d.el!==b) return;
-    b.classList.remove('dragging'); b.style.transform='';
-    document.querySelectorAll('.slot').forEach(s=>s.classList.remove('droptarget'));
-    if(!d.moving){ sel=i; render(); return; }
-    const t=slotAt(e.clientX, e.clientY, b);
-    if(!t || !t.dataset.edge || t.dataset.edge===cfg.remotes[i].edge){ render(); return; }
-    const to=t.dataset.edge, from=cfg.remotes[i].edge;
-    cfg.remotes.forEach((r,j)=>{ if(j!==i && r.edge===to) r.edge=from; });
-    cfg.remotes[i].edge=to; sel=i; render(); touch();
-    say(cfg.remotes[i].name+' is now on the '+to.toLowerCase(), true);
-  };
-  b.onpointercancel=()=>{ mapDrag=null; b.classList.remove('dragging'); b.style.transform=''; render(); };
+// Where a screen dragged to (x, y) (its top-left, in desktop pixels, real size) belongs: the side it sticks out of
+// most, and how far along that side. Snaps to line up with this desktop's ends and middle.
+function dropSpot(r, x, y, L, s){
+  const cx=x+r.width/2, cy=y+r.height/2;
+  const d={Right:cx-L.width, Left:-cx, Bottom:cy-L.height, Top:-cy};
+  const edge=Object.keys(d).reduce((a,b)=>d[b]>d[a]?b:a);
+  const side=sideways(edge), len=side?r.height:r.width, ll=side?L.height:L.width;
+  let o=Math.round(side?y:x);
+  const snap=12/s; for(const t of [0, ll-len, (ll-len)/2]) if(Math.abs(o-t)<snap){ o=Math.round(t); break; }
+  o=Math.max(-(len-120), Math.min(ll-120, o)); // always touching by at least 120 px
+  return {edge, offset:o};
 }
-function slotAt(x, y, self){
-  self.style.pointerEvents='none';
-  const el=document.elementFromPoint(x, y);
-  self.style.pointerEvents='';
-  return el ? el.closest('.slot') : null;
+function dragMon(d, i){
+  d.onpointerdown=e=>{
+    if(e.button!==0) return;
+    const r=cfg.remotes[i], q=remoteRect(r, view.L);
+    // start from its real size, centred where it is drawn now
+    mapDrag={i, el:d, sx:e.clientX, sy:e.clientY, x0:q.x+(q.w-r.width)/2, y0:q.y+(q.h-r.height)/2, moving:false, spot:null};
+    d.setPointerCapture(e.pointerId);
+  };
+  d.onpointermove=e=>{
+    const g=mapDrag; if(!g || g.el!==d) return;
+    if(!g.moving && Math.hypot(e.clientX-g.sx, e.clientY-g.sy)>5){ g.moving=true; d.classList.add('drag'); d.classList.remove('fit'); }
+    if(!g.moving) return;
+    const r=cfg.remotes[i], v=view;
+    g.spot=dropSpot(r, g.x0+(e.clientX-g.sx)/v.s, g.y0+(e.clientY-g.sy)/v.s, v.L, v.s);
+    const q=remoteRect({...r, edge:g.spot.edge, offset:g.spot.offset}, v.L);
+    place(d, v, q.x, q.y, q.w, q.h);
+  };
+  const end=commit=>{
+    const g=mapDrag; mapDrag=null; if(!g || g.el!==d) return;
+    d.classList.remove('drag');
+    if(!g.moving){ sel = sel===i ? -1 : i; render(); return; }
+    if(commit && g.spot){
+      const r=cfg.remotes[i], from=r.edge;
+      cfg.remotes.forEach((o,j)=>{ if(j!==i && o.enabled!==false && o.edge===g.spot.edge){ o.edge=from; o.offset=null; } });
+      r.edge=g.spot.edge; r.offset=g.spot.offset; sel=i; touch();
+    }
+    render();
+  };
+  d.onpointerup=()=>end(true); d.onpointercancel=()=>end(false);
 }
-function field(label, input){ const w=document.createElement('div'); const l=document.createElement('label'); l.textContent=label; w.append(l,input); return w; }
-function inp(type, value, on){ const i=document.createElement('input'); i.type=type; i.value=value; i.oninput=()=>on(i.value); return i; }
+function field(label, input){ const w=el('div'); w.append(el('label','f',label), input); return w; }
+function inp(type, value, on){ const i=el('input'); i.type=type; i.value=value; i.oninput=()=>on(i.value); return i; }
 function renderDetail(){
-  const box=$('detail'); box.innerHTML='';
+  const box=$('detail'); box.textContent='';
   if(sel<0||!cfg.remotes[sel]) return;
   const r=cfg.remotes[sel];
-  const grid=document.createElement('div'); grid.className='row'; grid.style.marginTop='8px';
-  grid.append(
-    field('Name', inp('text', r.name, v=>{ r.name=v; touch(); })),
-    field('Address (host:port, e.g. 100.64.0.5:24800)', inp('text', r.addr, v=>{ r.addr=v.trim(); touch(); }))
-  );
-  const g2=document.createElement('div'); g2.className='row3';
-  const side=document.createElement('select');
-  EDGES.filter(e=>e===r.edge || !cfg.remotes.some(o=>o!==r && o.enabled!==false && o.edge===e)).forEach(e=>{ const o=document.createElement('option'); o.textContent=e; if(e===r.edge) o.selected=true; side.appendChild(o); });
-  side.onchange=()=>{ r.edge=side.value; render(); touch(); };
-  g2.append(field('Side of this PC', side),
-    field('Screen width (px)', inp('number', r.width, v=>{ r.width=+v; touch(); })),
-    field('Screen height (px)', inp('number', r.height, v=>{ r.height=+v; touch(); })));
-  const en=document.createElement('label'); en.className='check';
-  const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=r.enabled!==false; cb.onchange=()=>{ r.enabled=cb.checked; render(); touch(); };
-  en.append(cb, document.createTextNode('Enabled'));
-  const st=document.createElement('div'); st.className='pill'; st.id='stline';
-  const btns=document.createElement('div'); btns.className='btns';
-  const mk=(t,cls,fn)=>{ const b=document.createElement('button'); b.textContent=t; if(cls) b.className=cls; b.onclick=()=>fn(b); btns.appendChild(b); return b; };
+  box.style.cssText='border-top:1px solid var(--line);margin-top:14px;padding-top:6px';
+  const grid=el('div','row');
+  grid.append(field('Name', inp('text', r.name, v=>{ r.name=v; touch(); })), field('Address (found again automatically if it changes)', inp('text', r.addr, v=>{ r.addr=v.trim(); touch(); })));
+  const g2=el('div','row3');
+  g2.append(field('Screen width (px)', inp('number', r.width, v=>{ r.width=+v; touch(); renderMap(); })), field('Screen height (px)', inp('number', r.height, v=>{ r.height=+v; touch(); renderMap(); })));
+  const st=el('div','pill'); st.id='stline'; st.style.alignSelf='end'; st.style.paddingBottom='9px'; g2.appendChild(st);
+  const mkSw=(text, small, on, fn)=>{ const l=el('label','sw'), c=el('input'); c.type='checkbox'; c.checked=on; c.onchange=()=>fn(c.checked); const s=el('span','',text); if(small) s.appendChild(el('small','',small)); l.append(c,s); return l; };
+  const sws=el('div'); sws.style.marginTop='8px';
+  sws.append(
+    mkSw('Fill the whole side', 'The pointer crosses anywhere along that edge. Off: real size, where you drag it.', r.offset==null, on=>{ r.offset = on ? null : 0; render(); touch(); }),
+    mkSw('Enabled', '', r.enabled!==false, on=>{ r.enabled=on; render(); touch(); }));
+  const btns=el('div','btns');
+  const mk=(t,cls,fn)=>{ const b=el('button','b '+cls,t); b.onclick=()=>fn(b); btns.appendChild(b); return b; };
   mk('Pair again','ghost',()=>{ openWizard(null, r.edge); pickTarget(r.name, r.addr); });
   if(os==='windows'){
     mk('Start display','ghost',b=>display(r,'start',b));
     mk('Stop display','ghost',b=>display(r,'stop',b));
-    mk('Open display','',async b=>{ try{ const j=await api('/api/viewer',{name:r.name}); $('dline').textContent = j.launched ? 'Viewer opened.' : 'Connect a VNC viewer to localhost:'+j.port; }catch(e){ $('dline').textContent=e.message; } });
+    mk('Open display','ghost',async()=>{ try{ const j=await api('/api/viewer',{name:r.name}); $('dline').textContent = j.launched ? 'Viewer opened.' : 'Connect a VNC viewer to localhost:'+j.port; }catch(e){ $('dline').textContent=e.message; } });
   }
-  mk('Remove screen','danger',()=>{ if(!confirm('Remove '+r.name+'?')) return; cfg.remotes.splice(sel,1); sel=-1; render(); touch(); });
-  const dl=document.createElement('div'); dl.id='dline'; dl.className='hint';
-  const hint=document.createElement('div'); hint.className='hint';
-  hint.textContent='Not paired, or it was reinstalled? Press Pair again and type the new code shown on it.';
-  box.append(grid,g2,en,st,btns,dl,hint);
+  mk('Remove','danger',()=>{ if(!confirm('Remove '+r.name+'?')) return; cfg.remotes.splice(sel,1); sel=-1; render(); touch(); });
+  const dl=el('div','hint'); dl.id='dline';
+  box.append(grid,g2,sws,btns,dl);
   renderStatusLine();
 }
 async function display(r, action, b){
   b.disabled=true; $('dline').textContent = action==='start' ? 'Starting display (can take ~10s)…' : 'Working…';
-  try{ const j=await api('/api/display',{name:r.name, action, width:r.width, height:r.height}); $('dline').textContent=j.detail; }
-  catch(e){ $('dline').textContent=e.message; }
+  try{ const j=await api('/api/display',{name:r.name, action, width:r.width, height:r.height}); $('dline').textContent=j.detail; }catch(e){ $('dline').textContent=e.message; }
   b.disabled=false;
 }
 function renderStatusLine(){
-  const el=$('stline'); if(!el||sel<0||!cfg.remotes[sel]) return;
+  const e=$('stline'); if(!e||sel<0||!cfg.remotes[sel]) return;
   const r=cfg.remotes[sel], s=stOf(r);
-  el.textContent = stText(r) + (s.detail && s.state!=='connected' ? ' — '+s.detail : '');
+  e.textContent = stText(r) + (s.detail && s.state!=='connected' ? ' — '+s.detail : '');
 }
+function render(){ renderMap(); renderDetail(); }
 
-// ---- animation
+// ---- effects (same formulas as the app: kvm_protocol::ease)
 function bez(c,t){
   const x=s=>3*(1-s)*(1-s)*s*c[0]+3*(1-s)*s*s*c[2]+s*s*s, y=s=>3*(1-s)*(1-s)*s*c[1]+3*(1-s)*s*s*c[3]+s*s*s;
   let lo=0,hi=1; for(let i=0;i<24;i++){ const m=(lo+hi)/2; if(x(m)<t) lo=m; else hi=m; } return y((lo+hi)/2);
 }
-// Same formulas as the app (kvm_protocol::ease).
 function ease(a,t){
   t=Math.min(Math.max(t,0),1); if(t<=0) return 0; if(t>=1) return 1;
   switch(a.style){
@@ -438,15 +536,16 @@ function bindSimple(){
   $('apal').onchange=e=>{ A().palette=e.target.value; touch(); };
   [0,1,2,3].forEach(i=>{ $('c'+i).oninput=e=>{ A().curve[i]=+e.target.value; drawCurve(); touch(); }; });
   document.querySelectorAll('.chips button').forEach(b=>b.onclick=()=>{ A().style='Custom'; A().curve=b.dataset.c.split(',').map(Number); fillSimple(); touch(); });
-  $('estop').onclick=()=>api('/api/emergency',{on:true}).then(poll);
-  $('resume').onclick=()=>api('/api/emergency',{on:false}).then(poll);
+  const stop=on=>api('/api/emergency',{on}).then(poll).catch(e=>say(e.message,false));
+  $('estop').onclick=()=>stop(!(lastState&&lastState.paused)); $('resume').onclick=()=>stop(false);
+  $('t-stop').onclick=()=>stop(!(lastState&&lastState.paused));
   $('aenter').onchange=e=>{ A().on_enter=e.target.checked; touch(); };
   $('aleave').onchange=e=>{ A().on_leave=e.target.checked; touch(); };
   $('guard').onchange=e=>{ cfg.game_guard=e.target.checked; touch(); };
   $('recv').onchange=e=>{ cfg.receive=e.target.checked; touch(); };
-  $('clip').onchange=e=>{ cfg.clipboard=e.target.checked; touch(); };
-  $('filedrop').onchange=e=>{ cfg.file_drop=e.target.checked; touch(); };
-  $('dropedge').onchange=e=>{ cfg.drop_edge=e.target.value; touch(); };
+  $('closequits').onchange=e=>{ cfg.close_quits=e.target.checked; touch(); };
+  const both=(a,b,set)=>{ [a,b].forEach(id=>$(id).onchange=e=>{ set(e.target.checked); $(a).checked=$(b).checked=e.target.checked; touch(); }); };
+  both('clip','t-clip',v=>cfg.clipboard=v); both('filedrop','t-files',v=>cfg.file_drop=v);
   $('updauto').onchange=e=>{ cfg.update_check=e.target.checked; touch(); };
   $('inboxdir').onchange=e=>{ cfg.inbox_dir=e.target.value.trim(); touch(); };
   $('swdelay').oninput=e=>{ cfg.switch_delay_ms=Math.max(0,Math.min(2000,+e.target.value||0)); touch(); };
@@ -454,29 +553,27 @@ function bindSimple(){
   $('inboxreset').onclick=()=>{ cfg.inbox_dir=''; $('inboxdir').value=''; touch(); };
   $('inboxpick').onclick=async()=>{
     $('inboxpick').disabled=true;
-    try{
-      const r=await api('/api/pick-folder',{start: cfg.inbox_dir || (lastState && lastState.inbox) || ''});
-      if(r.path){ cfg.inbox_dir=r.path; $('inboxdir').value=r.path; await flushSave(); touch(); }
-    }catch(e){ say(e.message,false); $('inboxdir').focus(); }
+    try{ const r=await api('/api/pick-folder',{start: cfg.inbox_dir || (lastState && lastState.inbox) || ''}); if(r.path){ cfg.inbox_dir=r.path; $('inboxdir').value=r.path; touch(); await flushSave(); } }
+    catch(e){ say(e.message,false); $('inboxdir').focus(); }
     $('inboxpick').disabled=false;
   };
   $('allow').onclick=()=>openWizard('host');
   $('addpc').onclick=()=>openWizard();
   $('esc').onchange=e=>{ cfg.escape_hid=+e.target.value; touch(); };
   $('preview').onclick=async()=>{ try{ await api('/api/effect/test',{animation:cfg.animation}); }catch(e){ say(e.message,false); } };
+  $('t-open').onclick=()=>api('/api/show',{}).catch(()=>{});
+  $('t-quit').onclick=()=>api('/api/quit',{}).catch(()=>{});
 }
 function fillSimple(){
   const a=cfg.animation;
   $('astyle').value=a.style; $('adur').value=a.duration_ms; $('asize').value=a.size_px; $('avisual').value=a.visual; $('apal').value=a.palette;
   $('aenter').checked=a.on_enter; $('aleave').checked=a.on_leave; $('guard').checked=cfg.game_guard; $('esc').value=String(cfg.escape_hid);
-  $('recv').checked=!!cfg.receive;
-  $('clip').checked=!!cfg.clipboard;
-  $('filedrop').checked=cfg.file_drop!==false;
-  $('dropedge').value=cfg.drop_edge||'Right';
+  $('recv').checked=!!cfg.receive; $('closequits').checked=!!cfg.close_quits;
+  $('clip').checked=$('t-clip').checked=!!cfg.clipboard;
+  $('filedrop').checked=$('t-files').checked=cfg.file_drop!==false;
   $('updauto').checked=cfg.update_check!==false;
   $('inboxdir').value=cfg.inbox_dir||'';
-  $('swdelay').value=cfg.switch_delay_ms ?? 150;
-  $('swcorner').value=cfg.corner_px ?? 60;
+  $('swdelay').value=cfg.switch_delay_ms ?? 150; $('swcorner').value=cfg.corner_px ?? 60;
   if(!a.curve) a.curve=[0.34,1.56,0.64,1];
   [0,1,2,3].forEach(i=>$('c'+i).value=a.curve[i]);
   $('customrow').style.display = a.style==='Custom' ? 'block' : 'none';
@@ -485,22 +582,19 @@ function fillSimple(){
 
 // ---- devices + pairing
 function renderPeers(list){
-  const box=$('peers'); box.innerHTML='';
-  if(!list.length){ box.innerHTML='<div class="hint">No paired devices yet.</div>'; return; }
+  const box=$('peers'); box.textContent='';
+  if(!list.length){ box.appendChild(el('div','hint','No paired devices yet.')); return; }
   list.forEach(p=>{
-    const row=document.createElement('div'); row.className='peer';
-    const l=document.createElement('div'); l.textContent=p.name+'  '; const k=document.createElement('span'); k.className='mono'; k.textContent=p.short; l.appendChild(k);
-    const b=document.createElement('button'); b.className='danger'; b.textContent='Remove';
+    const row=el('div','item'), l=el('div'); l.append(el('b','',p.name), document.createTextNode('  '), el('span','mono',p.short));
+    const b=el('button','b danger','Remove');
     b.onclick=async()=>{ if(!confirm('Remove '+p.name+'? It will need to be paired again.')) return; await api('/api/peers/remove',{key:p.key}); poll(); };
     row.append(l,b); box.appendChild(row);
   });
 }
-// ---- "Add a computer": find it, pick its side, type its code. Or show a big code on this one.
-let os='windows', peersNow=[], lastState=null;
 const wiz={mode:null, edge:null, target:null, scanning:false, hosting:false, peers0:0, paired:null, pairedAt:0, done:false};
 function wizShow(step){ ['w-choose','w-find','w-pin','w-show'].forEach(id=>$(id).hidden = id!==step); $('w-back').style.display = step==='w-choose' ? 'none' : ''; }
 function openWizard(mode, edge){
-  wiz.edge=edge||null; wiz.paired=null; wiz.done=false; $('wiz').style.display='flex';
+  wiz.edge=edge||null; wiz.paired=null; wiz.done=false; $('wiz').style.display='flex'; $('w-close').textContent='Close';
   if(mode==='ctl') startFind(); else if(mode==='host') startHost(); else { wiz.mode='choose'; wizShow('w-choose'); }
 }
 function stopHosting(){ if(wiz.hosting){ wiz.hosting=false; api('/api/pair/close',{}).catch(()=>{}); } }
@@ -511,8 +605,7 @@ $('w-ctl').onclick=()=>startFind();
 $('w-host').onclick=()=>startHost();
 $('wiz').onclick=e=>{ if(e.target===$('wiz')) closeWizard(); };
 document.addEventListener('keydown',e=>{ if(e.key==='Escape' && $('wiz').style.display==='flex') closeWizard(); });
-
-function startFind(){ wiz.mode='find'; wizShow('w-find'); $('w-list').innerHTML='<div class="hint">Looking for computers…</div>'; scanLoop(); }
+function startFind(){ wiz.mode='find'; wizShow('w-find'); $('w-list').textContent=''; $('w-list').appendChild(el('div','hint','Looking for computers…')); scanLoop(); }
 async function scanLoop(){
   if(wiz.mode!=='find' || wiz.scanning) return;
   wiz.scanning=true;
@@ -522,43 +615,37 @@ async function scanLoop(){
 }
 function renderFound(list){
   const box=$('w-list'); box.textContent='';
-  if(!list.length){ const d=document.createElement('div'); d.className='hint'; d.textContent='Looking for computers… nothing yet. (Waiting for the other computer to show its code.)'; box.appendChild(d); return; }
-  list.forEach(f=>{
-    const b=document.createElement('button'); b.className='founditem';
-    const n=document.createElement('b'); n.textContent=f.name; const a=document.createElement('span'); a.className='mono'; a.textContent=f.addr;
-    b.append(n,a); b.onclick=()=>pickTarget(f.name, f.addr); box.appendChild(b);
-  });
+  if(!list.length){ box.appendChild(el('div','hint','Looking for computers… nothing yet. (Waiting for the other computer to show its code.)')); return; }
+  list.forEach(f=>{ const b=el('button','founditem'); b.append(el('b','',f.name), el('span','mono',f.addr)); b.onclick=()=>pickTarget(f.name, f.addr); box.appendChild(b); });
 }
 $('w-addrgo').onclick=()=>{ const a=$('w-addr').value.trim(); if(!a){ $('w-addr').focus(); return; } pickTarget(a.split(':')[0], a); };
 $('w-addr').onkeydown=e=>{ if(e.key==='Enter') $('w-addrgo').click(); };
-
 function sideTaken(e){ return cfg.remotes.some(r=>r.enabled!==false && r.edge===e && wiz.target && r.addr!==wiz.target.addr && r.addr.split(':')[0]!==wiz.target.addr.split(':')[0]); }
 function renderSides(){
   const box=$('w-sides'); box.textContent='';
   const pos={Top:'1/2',Left:'2/1',Right:'2/3',Bottom:'3/2'};
   if(!wiz.edge || sideTaken(wiz.edge)) wiz.edge=['Right','Left','Top','Bottom'].find(e=>!sideTaken(e)) || 'Right';
-  const me=document.createElement('div'); me.className='meb'; me.textContent='This screen'; box.appendChild(me);
-  EDGES.forEach(e=>{ const b=document.createElement('button'); b.style.gridArea=pos[e]; b.textContent=e; if(e===wiz.edge) b.classList.add('on'); if(sideTaken(e)){ b.disabled=true; b.title='Another screen is already there'; } b.onclick=()=>{ wiz.edge=e; renderSides(); }; box.appendChild(b); });
+  box.appendChild(el('div','meb','This screen'));
+  EDGES.forEach(e=>{ const b=el('button','',e); b.style.gridArea=pos[e]; if(e===wiz.edge) b.classList.add('on'); if(sideTaken(e)){ b.disabled=true; b.title='Another screen is already there'; } b.onclick=()=>{ wiz.edge=e; renderSides(); }; box.appendChild(b); });
 }
 function pickTarget(name, addr){
   wiz.mode='pin'; wiz.target={name, addr}; wiz.paired=null; wiz.done=false;
   $('w-pintitle').textContent='Pair with '+name; renderSides();
-  $('w-code').value=''; $('w-status').textContent=''; $('w-status').className='hint'; $('w-pair').disabled=false;
+  $('w-code').value=''; $('w-status').textContent=''; $('w-status').className='hint center'; $('w-pair').disabled=false;
   wizShow('w-pin'); setTimeout(()=>$('w-code').focus(), 50);
 }
 $('w-code').oninput=()=>{ const d=$('w-code').value.replace(/\D/g,'').slice(0,8); $('w-code').value = d.length>4 ? d.slice(0,4)+' '+d.slice(4) : d; if(d.length===8) $('w-pair').focus(); };
 $('w-code').onkeydown=e=>{ if(e.key==='Enter') $('w-pair').click(); };
-async function flushSave(){ if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; await save(); } }
 $('w-pair').onclick=async()=>{
   const pin=$('w-code').value.replace(/\D/g,'');
-  if(pin.length!==8){ $('w-status').className='errmsg'; $('w-status').textContent='The code has 8 digits.'; return; }
-  $('w-pair').disabled=true; $('w-status').className='hint'; $('w-status').textContent='Pairing…';
+  if(pin.length!==8){ $('w-status').className='errmsg center'; $('w-status').textContent='The code has 8 digits.'; return; }
+  $('w-pair').disabled=true; $('w-status').className='hint center'; $('w-status').textContent='Pairing…';
   try{
     await flushSave();
     const r=await api('/api/pair/add',{name:wiz.target.name, addr:wiz.target.addr, pin, edge:wiz.edge});
     wiz.paired=r.name; wiz.pairedAt=Date.now();
     const s=await api('/api/state'); cfg=s.config; sel=cfg.remotes.findIndex(x=>x.name===r.name); render();
-  }catch(e){ $('w-status').className='errmsg'; $('w-status').textContent=e.message; $('w-pair').disabled=false; }
+  }catch(e){ $('w-status').className='errmsg center'; $('w-status').textContent=e.message; $('w-pair').disabled=false; }
 };
 async function startHost(){
   wiz.mode='show'; wizShow('w-show'); wiz.done=false; $('w-hstatus').textContent=''; $('w-bigpin').textContent='···· ····';
@@ -570,17 +657,17 @@ async function startHost(){
     $('w-myname').textContent=r.host;
     $('w-myaddr').textContent=(r.addrs||[]).map(a=>a+(r.port!==24800?':'+r.port:'')).join('   or   ') || '(no network found)';
     const s=await api('/api/state'); cfg=s.config; fillSimple();
-  }catch(e){ $('w-hstatus').className='errmsg'; $('w-hstatus').textContent=e.message; }
+  }catch(e){ $('w-hstatus').className='errmsg center'; $('w-hstatus').textContent=e.message; }
 }
 function wizardTick(s){
   if(wiz.mode==='pin' && wiz.paired && !wiz.done){
     const st=(s.status||{})[wiz.paired]||{}, waited=Date.now()-wiz.pairedAt;
     if(st.state==='connected'){
-      wiz.done=true; $('w-status').className='okmsg';
+      wiz.done=true; $('w-status').className='okmsg center';
       $('w-status').textContent='Paired! Move the mouse off the '+(wiz.edge||'').toLowerCase()+' edge of this screen to use '+wiz.paired+'.';
       $('w-close').textContent='Done';
     } else if(waited>3000 && (st.state==='not_paired' || st.state==='offline')){
-      wiz.done=true; $('w-pair').disabled=false; $('w-status').className='errmsg';
+      wiz.done=true; $('w-pair').disabled=false; $('w-status').className='errmsg center';
       $('w-status').textContent=(st.state==='offline' ? 'Could not reach it'+(st.detail?' ('+st.detail+')':'')+'. Is SmoothKvm open there?' : 'That did not work.')+' A code works once: show a new code on the other computer and try again.';
     }
   }
@@ -589,109 +676,94 @@ function wizardTick(s){
     if(peersNow.length>wiz.peers0){
       wiz.hosting=false; const p=peersNow[peersNow.length-1];
       $('w-bigpin').textContent='✓'; $('w-left').textContent='';
-      $('w-hstatus').className='okmsg'; $('w-hstatus').textContent='Paired with '+(p?p.name:'the other computer')+'! It can now control this computer.';
+      $('w-hstatus').className='okmsg center'; $('w-hstatus').textContent='Paired with '+(p?p.name:'the other computer')+'! It can now control this computer.';
       $('w-close').textContent='Done';
     } else if(o>0){ $('w-left').textContent='Code expires in '+Math.floor(o/60)+':'+String(o%60).padStart(2,'0')+'. It works once.'; }
     else {
       wiz.hosting=false; $('w-bigpin').textContent='···· ····'; $('w-left').textContent='';
-      $('w-hstatus').className='errmsg'; $('w-hstatus').innerHTML='';
-      const t=document.createElement('span'); t.textContent='The code expired or was used up. '; const b=document.createElement('button'); b.textContent='Show a new code'; b.onclick=startHost;
-      $('w-hstatus').append(t,b);
+      $('w-hstatus').className='errmsg center'; $('w-hstatus').textContent='';
+      const b=el('button','b','Show a new code'); b.onclick=startHost;
+      $('w-hstatus').append(el('span','','The code expired or was used up. '), b);
     }
   }
 }
 
-// ---- this computer's name and addresses
+// ---- this computer
 function renderWho(s){
-  const w=$('whoami'); w.textContent='';
-  const lead=document.createElement('span'); lead.textContent='This computer: '; const n=document.createElement('b'); n.textContent=s.host||'?'; w.append(lead,n);
-  const ts=a=>{ const p=a.split('.').map(Number); return p[0]===100 && p[1]>=64 && p[1]<128; };
-  (s.addrs||[]).forEach(a=>{ const l=document.createElement('span'); l.textContent='  ·  '+(ts(a)?'Tailscale IP':'IP'); const ip=document.createElement('span'); ip.className='ip'; ip.textContent=a+((s.port&&s.port!==24800)?':'+s.port:''); w.append(l,ip); });
-  if(!(s.addrs||[]).length){ const l=document.createElement('span'); l.textContent='  ·  no network'; w.appendChild(l); }
+  $('hostname').textContent=s.host||'This computer'; $('ver').textContent='v'+(s.version||''); $('t-host').textContent=s.host||'SmoothKvm';
+  const w=$('hostips'); w.textContent='';
+  (s.addrs||[]).forEach(a=>{ const d=el('div','ip', a+((s.port&&s.port!==24800)?':'+s.port:'')); w.appendChild(d); });
+  if(!(s.addrs||[]).length) w.textContent='no network';
 }
 
 // ---- updates and uninstall
 function ago(t){ if(!t) return 'never'; const d=Math.max(0,Math.floor(Date.now()/1000-t)); return d<60?'just now':d<3600?Math.floor(d/60)+' min ago':d<86400?Math.floor(d/3600)+' h ago':Math.floor(d/86400)+' days ago'; }
 function renderUpdate(s){
-  const u=s.update||{};
-  const bar=$('updbar');
-  if(u.busy){ bar.style.display='block'; $('updtext').textContent=u.busy; $('updbarbtn').style.display='none'; }
-  else if(u.available){ bar.style.display='block'; $('updtext').textContent='SmoothKvm '+u.latest+' is available (you have '+u.current+').'; $('updbarbtn').style.display=''; }
-  else bar.style.display='none';
+  const u=s.update||{}, bar=$('updbar');
+  if(u.busy){ bar.classList.add('show'); $('updtext').textContent=u.busy; $('updbarbtn').style.display='none'; }
+  else if(u.available){ bar.classList.add('show'); $('updtext').textContent='SmoothKvm '+u.latest+' is available (you have '+u.current+').'; $('updbarbtn').style.display=''; }
+  else bar.classList.remove('show');
+  $('navupd').hidden=!u.available;
   let line='You have SmoothKvm '+u.current+'. ';
-  if(u.busy) line+=u.busy;
-  else if(u.checking) line+='Checking…';
-  else if(u.available) line+='Version '+u.latest+' is available.';
-  else if(u.error) line+='Last check failed: '+u.error;
-  else if(u.checked_at) line+='That is the newest version (checked '+ago(u.checked_at)+').';
-  else line+='Not checked yet.';
-  $('updline').textContent=line;
-  $('updline').style.color = (u.error && !u.busy) ? 'var(--bad)' : '';
+  if(u.busy) line+=u.busy; else if(u.checking) line+='Checking…'; else if(u.available) line+='Version '+u.latest+' is available.';
+  else if(u.error) line+='Last check failed: '+u.error; else if(u.checked_at) line+='That is the newest version (checked '+ago(u.checked_at)+').'; else line+='Not checked yet.';
+  $('updline').textContent=line; $('updline').style.color = (u.error && !u.busy) ? 'var(--bad)' : '';
   $('updnotes').textContent = u.available && u.notes ? 'What\'s new: '+u.notes : '';
-  $('updgo').style.display = u.available && !u.busy ? '' : 'none';
-  $('updgo').textContent='Update to '+(u.latest||'');
+  $('updgo').style.display = u.available && !u.busy ? '' : 'none'; $('updgo').textContent='Update to '+(u.latest||'');
   $('updcheck').disabled=!!(u.checking||u.busy);
 }
-async function doUpdate(){
-  try{ await api('/api/update/apply',{}); say('Updating…',true); poll(); }catch(e){ say(e.message,false); }
-}
+async function doUpdate(){ try{ await api('/api/update/apply',{}); say('Updating…',true); poll(); }catch(e){ say(e.message,false); } }
 $('updgo').onclick=doUpdate; $('updbarbtn').onclick=doUpdate;
 $('updcheck').onclick=async()=>{ $('updcheck').disabled=true; $('updline').textContent='Checking…'; try{ await api('/api/update/check',{}); }catch(e){ say(e.message,false); } poll(); };
 $('uninstall').onclick=async()=>{
   const wipe=$('wipe').checked;
   if(!confirm('Uninstall SmoothKvm from this computer?'+(wipe?'\n\nYour settings, this computer\'s key and the paired devices will be deleted too.':'\n\nYour settings are kept, in case you install it again.'))) return;
   $('uninstall').disabled=true; say('Removing SmoothKvm…',true);
-  try{ const r=await api('/api/uninstall',{confirm:'remove', wipe}); say(r.detail||'Removed',true); document.body.innerHTML='<main><h1>SmoothKvm</h1><p>'+(r.detail||'SmoothKvm was removed.').replace(/[<>&]/g,'')+' You can close this window.</p></main>'; }
-  catch(e){ $('uninstall').disabled=false; say(e.message,false); alert(e.message); }
+  try{ const r=await api('/api/uninstall',{confirm:'remove', wipe}); document.body.textContent=''; const m=el('div','wrap'); m.append(el('h1','','SmoothKvm'), el('p','',(r.detail||'SmoothKvm was removed.')+' You can close this window.')); document.body.appendChild(m); }
+  catch(e){ $('uninstall').disabled=false; say(e.message,false); }
 };
 
 // ---- app windows shown on another computer (Windows)
 async function loadWindows(){
+  if(os!=='windows') return;
   try{
     const r=await api('/api/windows');
-    const sel=$('wintarget'), keep=sel.value; sel.textContent='';
-    (r.targets||[]).forEach(t=>{ const o=document.createElement('option'); o.value=t.name; o.textContent='Show on '+t.name; sel.appendChild(o); });
-    if(keep) sel.value=keep;
+    const selc=$('wintarget'), keep=selc.value; selc.textContent='';
+    (r.targets||[]).forEach(t=>{ const o=el('option','','Show on '+t.name); o.value=t.name; selc.appendChild(o); });
+    if(keep) selc.value=keep;
     const box=$('winlist'); box.textContent='';
-    if(!(r.targets||[]).length){ const d=document.createElement('div'); d.className='hint'; d.textContent='Connect to another computer first (or let one control this PC).'; box.appendChild(d); sel.style.display='none'; return; }
-    sel.style.display='';
+    if(!(r.targets||[]).length){ box.appendChild(el('div','hint','Connect to another computer first (or let one control this PC).')); selc.style.display='none'; return; }
+    selc.style.display='';
     const showing=new Set((r.streams||[]).map(s=>s.window));
     (r.windows||[]).filter(w=>!showing.has(w.id)).forEach(w=>{
-      const b=document.createElement('button'); b.className='founditem';
-      const n=document.createElement('b'); n.textContent=w.title; const s=document.createElement('span'); s.className='mono'; s.textContent=w.width?w.width+'×'+w.height:'minimized';
-      b.append(n,s);
+      const b=el('button','founditem'); b.append(el('b','',w.title), el('span','mono', w.width?w.width+'×'+w.height:'minimized'));
       b.onclick=async()=>{ try{ const x=await api('/api/stream',{window:w.id, to:$('wintarget').value||undefined}); say('Showing it on '+x.to,true); setTimeout(loadWindows,500); }catch(e){ say(e.message,false); } };
       box.appendChild(b);
     });
-    if(!box.children.length){ const d=document.createElement('div'); d.className='hint'; d.textContent='No other app windows open.'; box.appendChild(d); }
+    if(!box.children.length) box.appendChild(el('div','hint','No other app windows open.'));
   }catch(e){}
 }
 function renderStreams(s){
-  const box=$('streams'); if(!box) return;
-  const list=s.streams||[]; box.textContent='';
-  list.forEach(x=>{
-    const row=document.createElement('div'); row.className='peer';
-    const l=document.createElement('div'); l.textContent='Showing "'+x.title+'" on '+x.to;
-    const b=document.createElement('button'); b.className='danger'; b.textContent='Stop';
-    b.onclick=async()=>{ await api('/api/stream/stop',{id:x.id}); setTimeout(loadWindows,500); };
-    row.append(l,b); box.appendChild(row);
+  const box=$('streams'); box.textContent='';
+  (s.streams||[]).forEach(x=>{
+    const row=el('div','item'); row.appendChild(el('div','','Showing "'+x.title+'" on '+x.to));
+    const b=el('button','b danger','Stop'); b.onclick=async()=>{ await api('/api/stream/stop',{id:x.id}); setTimeout(loadWindows,500); };
+    row.appendChild(b); box.appendChild(row);
   });
 }
 $('winrefresh').onclick=loadWindows;
 
-// ---- Linux: files dropped on this page (a normal browser can't tell us their path, so they are uploaded locally)
+// ---- Linux: files dropped on this page (a browser can't tell us their path, so they are uploaded locally)
 function bindLinuxDrop(){
   document.addEventListener('dragover',e=>{ if(e.dataTransfer && [...e.dataTransfer.types].includes('Files')){ e.preventDefault(); document.body.classList.add('dropping'); } });
   document.addEventListener('dragleave',e=>{ if(!e.relatedTarget) document.body.classList.remove('dropping'); });
   document.addEventListener('drop',async e=>{
     e.preventDefault(); document.body.classList.remove('dropping');
-    const items=[...(e.dataTransfer.items||[])], files=[];
-    let folders=0;
+    const items=[...(e.dataTransfer.items||[])], files=[]; let folders=0;
     items.forEach(it=>{ const en=it.webkitGetAsEntry && it.webkitGetAsEntry(); if(en && en.isDirectory){ folders++; return; } const f=it.getAsFile(); if(f) files.push(f); });
     if(folders) say('Folders can\'t be dropped here; send them with: SmoothKvm send <folder>', false);
     if(!files.length) return;
-    const batch=[...crypto.getRandomValues(new Uint8Array(8))].map(b=>b.toString(16).padStart(2,'0')).join('');
-    const paths=[];
+    const batch=[...crypto.getRandomValues(new Uint8Array(8))].map(b=>b.toString(16).padStart(2,'0')).join(''), paths=[];
     try{
       for(const f of files){
         say('Preparing '+f.name+'…',true);
@@ -703,61 +775,96 @@ function bindLinuxDrop(){
   });
   window.addEventListener('pagehide',()=>{ try{ fetch('/api/bye',{method:'POST',keepalive:true,headers:{'X-Token':TOKEN},body:'{}'}); }catch(e){} });
 }
-let evAfter=0, evAll=[], seenAlerts=0;
-function fmtT(t){ const d=new Date(t*1000); return d.toLocaleTimeString([], {hour12:false}); }
+
+// ---- activity log
+let evAfter=0, evAll=[];
+function fmtT(t){ return new Date(t*1000).toLocaleTimeString([], {hour12:false}); }
 function renderEvents(){
   const f=$('evfilter').value, box=$('evlist');
   const list=evAll.filter(e=> f==='all' || (f==='warn' && e.level!=='info') || (f==='alert' && e.level==='alert')).slice().reverse().slice(0,200);
   box.textContent='';
-  if(!list.length){ const d=document.createElement('div'); d.className='hint'; d.textContent='Nothing to show.'; box.appendChild(d); return; }
-  list.forEach(e=>{ const d=document.createElement('div'); d.className='ev '+e.level; const t=document.createElement('span'); t.className='t'; t.textContent=fmtT(e.t)+(e.level==='alert'?'  ALERT':e.level==='warn'?'  warn':''); d.append(t, document.createTextNode(e.text)); box.appendChild(d); });
+  if(!list.length){ const d=el('div','hint','Nothing to show.'); d.style.padding='8px'; box.appendChild(d); return; }
+  list.forEach(e=>{ const d=el('div','ev '+e.level); d.append(el('span','t', fmtT(e.t)+(e.level==='alert'?'  ALERT':e.level==='warn'?'  warn':'')), document.createTextNode(e.text)); box.appendChild(d); });
 }
 async function pollEvents(){
   try{
     const r=await api('/api/events?after='+evAfter);
     if(r.events.length){ evAll=evAll.concat(r.events).slice(-400); evAfter=r.events[r.events.length-1].seq; renderEvents();
-      const al=r.events.filter(e=>e.level==='alert'); if(al.length){ $('alerttext').textContent=al[al.length-1].text; $('alertbar').style.display='block'; } }
-    const b=$('alertbadge'); if(r.alerts){ b.textContent=r.alerts+' alert'+(r.alerts>1?'s':''); b.className='badge red'; b.style.display=''; } else b.style.display='none';
+      const al=r.events.filter(e=>e.level==='alert'); if(al.length){ $('alerttext').textContent=al[al.length-1].text; $('alertbar').classList.add('show'); } }
+    const b=$('alertbadge'), n=$('navalerts');
+    if(r.alerts){ b.textContent=r.alerts+' alert'+(r.alerts>1?'s':''); b.className='badge red'; b.style.display=''; n.textContent=r.alerts; n.hidden=false; } else { b.style.display='none'; n.hidden=true; }
   }catch(e){}
 }
-$('alertok').onclick=()=>{ $('alertbar').style.display='none'; };
+$('alertok').onclick=()=>$('alertbar').classList.remove('show');
 $('evfilter').onchange=renderEvents;
 $('evcopy').onclick=async()=>{ try{ await navigator.clipboard.writeText(evAll.map(e=>new Date(e.t*1000).toISOString()+' '+e.level.toUpperCase()+' '+e.text).join('\n')); say('Log copied',true);}catch(e){ say('Could not copy',false);} };
-async function loadAuto(){ try{ const r=await api('/api/autostart'); $('autostart').checked=!!r.on; $('autostart').onchange=async()=>{ try{ await api('/api/autostart',{on:$('autostart').checked}); say('Saved',true);}catch(e){ say(e.message,false); $('autostart').checked=!$('autostart').checked; } }; }catch(e){} }
+async function loadAuto(){ try{ const r=await api('/api/autostart'); $('autostart').checked=!!r.on; $('autostart').onchange=async()=>{ try{ await api('/api/autostart',{on:$('autostart').checked}); }catch(e){ say(e.message,false); $('autostart').checked=!$('autostart').checked; } }; }catch(e){} }
 function human(b){ return b>=1e9?(b/1e9).toFixed(2)+' GB':b>=1e6?(b/1e6).toFixed(1)+' MB':b>=1e3?(b/1e3).toFixed(0)+' KB':b+' B'; }
 function renderXfer(s){
   const t=s.transfer, tg=s.targets||[];
   $('tgtnames').textContent = tg.length ? tg.map(x=>x.name).join(', ') : '(no computer connected right now)';
   if(s.inbox) $('inbox').textContent=s.inbox;
-  if(!t){ $('xfer').style.display='none'; return; }
-  $('xfer').style.display='block';
-  const pct = t.total_bytes ? Math.min(100, 100*t.done_bytes/t.total_bytes) : 100;
-  $('xferhead').textContent = (t.dir==='send' ? 'Sending to ' : 'Receiving from ') + t.peer + ' - ' + t.files + ' file(s)';
-  $('xferbar').style.width = (t.finished ? 100 : pct) + '%';
-  $('xferbar').style.background = t.finished ? (t.ok ? '#2fa84f' : '#e03a2f') : '#3b6df0';
+  $('xfer').style.display=$('t-xfer').style.display = t ? 'block' : 'none';
+  if(!t) return;
+  const pct = t.finished ? 100 : (t.total_bytes ? Math.min(100, 100*t.done_bytes/t.total_bytes) : 100);
+  const head=(t.dir==='send' ? 'Sending to ' : 'Receiving from ') + t.peer + ' · ' + t.files + ' file(s)';
+  const col = t.finished ? (t.ok ? 'var(--ok)' : 'var(--bad)') : 'var(--acc)';
+  $('xferhead').textContent=head; $('t-xferhead').textContent=head+(t.finished?'':' · '+Math.round(pct)+'%');
+  ['xferbar','t-xferbar'].forEach(id=>{ $(id).style.width=pct+'%'; $(id).style.background=col; });
   $('xferline').textContent = t.finished ? t.detail : (human(t.done_bytes)+' of '+human(t.total_bytes)+'  ·  '+human(t.rate)+'/s  ·  '+t.file);
 }
-function render(){ renderMap(); renderDetail(); }
+
+// ---- the tray panel
+function renderTray(s){
+  const box=$('t-list'); box.textContent='';
+  const rs=(cfg&&cfg.remotes||[]).filter(r=>r.enabled!==false);
+  rs.forEach(r=>{ const d=el('div','ti'); d.append(el('span','dot '+stOf(r).state), el('b','',r.name), el('small','',stText(r)+' · '+r.edge.toLowerCase())); box.appendChild(d); });
+  (s.sessions||[]).forEach(x=>{ const d=el('div','ti'); d.append(el('span','dot connected'), el('b','', (x.name||x.peer||'A computer')), el('small','','controlling this one')); box.appendChild(d); });
+  if(!box.children.length) box.appendChild(el('div','hint','No computers yet. Open settings to add one.'));
+  const up=rs.filter(r=>stOf(r).state==='connected').length, st=$('t-state');
+  st.textContent = s.paused ? 'Stopped' : rs.length ? up+' of '+rs.length+' connected' : 'Ready';
+  st.className='badge'+(s.paused?' red':'');
+  $('t-quit').style.display = os==='windows' ? '' : 'none';
+}
+
+let syncedCfg='';
 async function poll(){
   try{
     const s=await api('/api/state?page=1');
-    lastState=s; status=s.status||{}; $('me').textContent=s.me; peersNow=s.peers||[]; renderPeers(peersNow);
-    const g=$('game'); g.textContent='Game mode: '+(s.game_active ? 'ACTIVE (screen switching paused)' : 'off'); g.className='badge win-only'+(s.game_active?' on':'');
-    { const n=(s.sessions||[]).length, o=s.pairing_open_secs||0, listening = os==='linux' || (cfg&&cfg.receive);
-      $('recvinfo').textContent = !listening ? 'Off. Nothing is listening.' :
-        'On. ' + (n ? n+' computer(s) controlling this one right now. ' : 'No one is connected. ') + (o ? 'Pairing is open for '+o+'s (code '+(s.pairing_pin||'?')+').' : ''); }
-    renderWho(s); renderUpdate(s); wizardTick(s); renderStreams(s);
+    lastState=s; status=s.status||{}; peersNow=s.peers||[];
+    // settings changed elsewhere (the other window, the terminal, or learned from a connection): take them over
+    const fresh=JSON.stringify(s.config);
+    if(cfg && fresh!==syncedCfg && !saveTimer && !mapDrag && !(document.activeElement && /INPUT|SELECT/.test(document.activeElement.tagName))){ cfg=s.config; fillSimple(); if(!TRAY) renderDetail(); }
+    if(!saveTimer) syncedCfg=fresh;
+    const stopTxt = s.paused ? 'Resume' : 'Emergency stop';
+    $('estop').textContent=stopTxt; $('t-stop').textContent=stopTxt;
+    $('estop').classList.toggle('stop', !s.paused); $('t-stop').classList.toggle('stop', !s.paused);
     renderXfer(s);
-    $('pausedbar').style.display = s.paused ? 'block' : 'none';
-    $('estop').style.display = s.paused ? 'none' : '';
+    if(TRAY){ renderWho(s); renderTray(s); return; }
+    $('me').textContent=s.me; renderPeers(peersNow);
+    const g=$('game'); g.textContent='Game mode: '+(s.game_active ? 'ACTIVE (switching paused)' : 'off'); g.className='badge win-only'+(s.game_active?' on':'');
+    { const n=(s.sessions||[]).length, o=s.pairing_open_secs||0, listening = os==='linux' || (cfg&&cfg.receive);
+      $('recvinfo').textContent = !listening ? 'Not listening: other computers cannot control this one.' :
+        (n ? n+' computer(s) controlling this one right now. ' : 'Listening for paired computers. No one is connected. ') + (o ? 'Pairing is open for '+o+'s.' : ''); }
+    renderWho(s); renderUpdate(s); wizardTick(s); renderStreams(s);
+    $('pausedbar').classList.toggle('show', !!s.paused);
     if(cfg && !mapDrag){ renderMap(); renderStatusLine(); }
   }catch(e){ say('Lost connection to SmoothKvm: '+e.message, false); }
 }
+// Poll while the window is visible; when hidden, just a slow heartbeat (so nothing is wasted in the background).
+let lastPoll=0;
+function tick(){
+  const every = document.hidden ? 30000 : 1500;
+  if(Date.now()-lastPoll >= every-50){ lastPoll=Date.now(); poll(); if(!TRAY && !document.hidden) pollEvents(); }
+}
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ lastPoll=0; tick(); } });
+window.addEventListener('resize',()=>{ if(cfg && !TRAY) renderMap(); });
 async function init(){
   try{
     const s=await api('/api/state'); os=s.os||'windows'; document.body.classList.add('os-'+os); document.title='SmoothKvm - '+(s.host||'');
-    cfg=s.config; status=s.status||{}; fillSimple(); bindSimple(); render(); poll(); setInterval(poll,1500); pollEvents(); setInterval(pollEvents,1500);
-    if(os==='windows'){ loadAuto(); loadWindows(); setInterval(loadWindows, 8000); } else bindLinuxDrop();
+    lastState=s; cfg=s.config; syncedCfg=JSON.stringify(cfg); status=s.status||{}; fillSimple(); bindSimple();
+    if(!TRAY){ let p='screens'; try{ p=localStorage.getItem('page')||p; }catch(e){} go(p); render(); if(os==='windows') loadAuto(); else bindLinuxDrop(); }
+    tick(); setInterval(tick, 1500);
   }
   catch(e){ say('Could not load: '+e.message+'  (open this page with the SmoothKvm command)', false); }
 }

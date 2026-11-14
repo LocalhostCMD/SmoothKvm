@@ -29,7 +29,8 @@ It starts a service on boot and adds **SmoothKvm** to the app menu (a window; no
 If it does not show up in the list, type the IP address shown at the top of the other computer's window instead.
 In the terminal: `pair` shows the code in big digits; `add <name> <side> <ip>` then `pair <name> <code>` pairs.
 The code is mixed into the key exchange, works once, and any wrong try cancels it. A computer only answers the
-search while it is showing a code.
+search while it is showing a code, or when the question comes from a computer already paired with it (that is
+how a paired computer is found again after its address changes).
 
 ## Use
 - **App window**: Start Menu / app menu → SmoothKvm (Linux: `SmoothKvm app`). Click a side of "This PC" to add a computer.
@@ -44,7 +45,14 @@ search while it is showing a code.
   and they go to the received-files folder (`Downloads/SmoothKvm`, or the folder chosen under **Send files**, or
   `files folder <path>`). Files never overwrite anything and are never opened. You can also drop files on the
   SmoothKvm window, or use `SmoothKvm send <files or folders> [--to <name>]`.
-- **Move a screen** to another side after pairing: drag it in the Screens map (terminal: `move <name> <side>`).
+- **Place a screen** where it really sits: drag it on the Screens map, like monitors in display settings. The map
+  shows this computer's monitors and the other computer's screen at their real sizes; the pointer crosses exactly
+  where they touch. A dashed screen fills the whole side (the pointer crosses anywhere along it). Terminal:
+  `move <name> <side>`.
+- **Tray panel** (Windows): click the tray icon for a small panel (who is connected, transfers, clipboard and
+  file switches, emergency stop); double-click it, or choose Open settings, for the full window.
+- **Found again automatically**: if a paired computer gets a new address, SmoothKvm finds it on the network by
+  its device key and reconnects; changing settings no longer interrupts the connection.
 - **Show an app on the other computer** (Windows → Linux, e.g. Fusion 360 from the laptop on the Ubuntu screen):
   drag the app's window by its title bar against the screen edge where the other computer is and hold it there a
   moment (it goes across; the original stays where it was on Windows), or pick it under **Show an app on another
@@ -94,7 +102,9 @@ the installer, the .deb, `latest.json` and `latest.json.sig` to a GitHub release
 Releases include `SHA256SUMS` + GPG signatures and Authenticode-signed Windows files; see [SECURITY.md](SECURITY.md).
 
 ## Transparency
-The Windows app is never hidden: it always shows its window, and closing the window quits it completely. It has an
+The Windows app is never hidden: its tray icon is there whenever it runs. Closing the window leaves it working
+from the tray (quit from the tray menu or the tray panel); turn on **Closing the window quits SmoothKvm** under
+Controls for the old behaviour. Started at sign-in it shows only the tray icon. It has an
 activity and security log (also `/log` in the terminal). See SECURITY.md.
 
 ## Controlling from Ubuntu
