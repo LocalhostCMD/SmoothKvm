@@ -465,7 +465,7 @@ fn handle_mouse(msg: u32, info: &MSLLHOOKSTRUCT) -> bool {
     }
 }
 
-fn scan_to_hid(scan: u16, ext: bool) -> Option<u16> {
+pub(crate) fn scan_to_hid(scan: u16, ext: bool) -> Option<u16> {
     static MAP: OnceLock<HashMap<(u16, bool), u16>> = OnceLock::new();
     MAP.get_or_init(|| {
         let mut m = HashMap::new();

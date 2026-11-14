@@ -48,6 +48,8 @@ mod xfer;
 #[cfg(windows)]
 mod stream_win;
 #[cfg(windows)]
+mod view_win;
+#[cfg(windows)]
 mod drag_win;
 use store::Identity;
 
@@ -268,11 +270,15 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64, ke
             {
                 return view_x11::run(conn, peer, id, title, width, height);
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(windows)]
+            {
+                return view_win::run(conn, peer, id, title, width, height);
+            }
+            #[cfg(not(any(target_os = "linux", windows)))]
             {
                 let _ = (title, width, height);
                 let _ = conn.send(&Message::WindowClose { id });
-                return Err(io::Error::new(io::ErrorKind::Unsupported, "showing app windows from other computers works on Linux so far"));
+                return Err(io::Error::new(io::ErrorKind::Unsupported, "showing app windows from other computers is not supported on this system"));
             }
         }
         Message::Announce { port, version } => {
