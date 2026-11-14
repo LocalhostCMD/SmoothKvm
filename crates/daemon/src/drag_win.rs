@@ -14,9 +14,9 @@ use windows::core::{implement, w, HRESULT};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL};
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-use windows::Win32::System::Ole::{DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE};
+use windows::Win32::System::Ole::{IDropSource, IDropSource_Impl, OleInitialize, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE};
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
-use windows::Win32::UI::Shell::{SHCreateDataObject, DROPFILES};
+use windows::Win32::UI::Shell::{SHCreateDataObject, SHDoDragDrop, DROPFILES};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 struct Drag {
@@ -172,10 +172,10 @@ unsafe fn run(names: &[String], id: u32) -> Result<(), String> {
     let data: IDataObject = SHCreateDataObject(None, None, None).map_err(e)?;
     set_files(&data, &paths).map_err(e)?;
     let source: IDropSource = DropSource { id, data: data.clone(), dir: dir.clone(), started: Instant::now() }.into();
-    let mut effect = DROPEFFECT::default();
-    let hr = DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect);
+    // the shell's version of DoDragDrop also shows the usual picture of what is being dragged
+    let effect = SHDoDragDrop(hwnd, &data, &source, DROPEFFECT_COPY).unwrap_or(DROPEFFECT_NONE);
     let _ = DestroyWindow(hwnd);
-    let dropped = hr == DRAGDROP_S_DROP && effect != DROPEFFECT_NONE;
+    let dropped = effect != DROPEFFECT_NONE;
     if dropped {
         shared::info(&format!("Dropped {} item(s) from the other computer", paths.len()));
         return Ok(());

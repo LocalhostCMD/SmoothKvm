@@ -1,6 +1,6 @@
 //! Linux: carrying a drag across the screen edge. While you drag something (mouse button held) against the
 //! side of the screen where another computer is, an invisible catcher appears along that edge. A file drag that
-//! rests there for a moment is carried over (the pointer goes on to the other computer with the files in hand);
+//! reaches it is carried straight over (the pointer goes on to the other computer with the files in hand);
 //! if that is not possible, letting go on the edge still sends the files over. Nothing is ever shown.
 //!
 //! It is a plain X11 window speaking the XDND drag-and-drop protocol. KDE Plasma on Wayland passes drags from
@@ -295,8 +295,8 @@ fn run(x: X, dpy: *mut Display, rx: Receiver<Cmd>, ident: Arc<Identity>) {
             }
         }
         if s.shown && s.hovering && s.carry == 0 {
-            let wait = Duration::from_millis(crate::store::load_config().switch_delay_ms.max(150) as u64);
-            if s.hover_since.map(|t| t.elapsed() >= wait).unwrap_or(false) {
+            // like a second monitor: the drag goes straight across, no pause at the edge
+            if s.hover_since.is_some() {
                 s.carry = 1;
                 unsafe {
                     (s.x.XConvertSelection)(dpy, s.atoms.selection, s.atoms.uri_list, s.atoms.prop, s.win, 0);

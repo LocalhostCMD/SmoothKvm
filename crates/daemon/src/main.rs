@@ -78,6 +78,8 @@ mod edge_linux;
 #[cfg(target_os = "linux")]
 mod drop_x11;
 #[cfg(target_os = "linux")]
+mod drag_x11;
+#[cfg(target_os = "linux")]
 mod view_x11;
 #[cfg(target_os = "linux")]
 mod fx_x11;
@@ -283,11 +285,30 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
     let (mut rd, mut wr) = conn.split()?;
     let cs = Arc::new(std::sync::Mutex::new(clip::ClipSync::new()));
     let alive = Arc::new(AtomicBool::new(true));
+    let (up_tx, up_rx) = std::sync::mpsc::channel::<Message>();
+    if let Ok(mut u) = UPLINK.lock() {
+        u.push((id, up_tx));
+    }
     {
         let (cs, alive) = (cs.clone(), alive.clone());
         std::thread::spawn(move || {
+            let mut last_clip = std::time::Instant::now();
             while alive.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(600));
+                // messages for the controlling computer (a drag carried over to it), then the clipboard
+                match up_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(m) => {
+                        if wr.send(&m).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(_) => break,
+                }
+                if last_clip.elapsed() < Duration::from_millis(600) {
+                    continue;
+                }
+                last_clip = std::time::Instant::now();
                 let text = cs.lock().ok().and_then(|mut c| c.outgoing());
                 if let Some(t) = text {
                     if wr.send(&Message::Clipboard(t)).is_err() {
@@ -317,10 +338,22 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
         }
     };
     alive.store(false, Ordering::SeqCst);
+    if let Ok(mut u) = UPLINK.lock() {
+        u.retain(|(s, _)| *s != id);
+    }
     held.release_all();
     println!("session ended: {end}");
     shared::info(&format!("{peer} stopped controlling this PC"));
     Ok(())
+}
+
+/// Input sessions of the computers controlling this one (newest last), for messages sent back up to them.
+static UPLINK: std::sync::Mutex<Vec<(u64, std::sync::mpsc::Sender<Message>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Send a message to the computer controlling this one right now (the newest session). False if none.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn send_to_controller(m: Message) -> bool {
+    UPLINK.lock().ok().and_then(|u| u.last().map(|(_, tx)| tx.send(m).is_ok())).unwrap_or(false)
 }
 
 /// Being controlled from another computer: the screen-change effect where the pointer arrives here (Enter),

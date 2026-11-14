@@ -60,7 +60,9 @@ pub const ButtonRelease: c_int = 5;
 pub const MotionNotify: c_int = 6;
 pub const FocusOut: c_int = 10;
 pub const Expose: c_int = 12;
+pub const MapNotify: c_int = 19;
 pub const ConfigureNotify: c_int = 22;
+pub const SelectionRequest: c_int = 30;
 pub const SelectionNotify: c_int = 31;
 pub const ClientMessage: c_int = 33;
 // masks
@@ -127,6 +129,7 @@ pub struct X {
     pub XMatchVisualInfo: unsafe extern "C" fn(*mut Display, c_int, c_int, c_int, *mut XVisualInfo) -> c_int,
     pub XCreateColormap: unsafe extern "C" fn(*mut Display, Window, *mut c_void, c_int) -> c_ulong,
     pub XFreeColormap: unsafe extern "C" fn(*mut Display, c_ulong) -> c_int,
+    pub XTranslateCoordinates: unsafe extern "C" fn(*mut Display, Window, Window, c_int, c_int, *mut c_int, *mut c_int, *mut Window) -> c_int,
 }
 
 #[repr(C)]
@@ -234,6 +237,7 @@ impl X {
                 XMatchVisualInfo: sym!(lib, XMatchVisualInfo),
                 XCreateColormap: sym!(lib, XCreateColormap),
                 XFreeColormap: sym!(lib, XFreeColormap),
+                XTranslateCoordinates: sym!(lib, XTranslateCoordinates),
             })
         }
     }

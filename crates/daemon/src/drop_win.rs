@@ -11,8 +11,11 @@ use kvm_protocol::Edge;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use windows::core::w;
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::core::{implement, w};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, POINTL, RECT, WPARAM};
+use windows::Win32::System::Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
+use windows::Win32::System::Ole::{IDropTarget, IDropTarget_Impl, OleInitialize, RegisterDragDrop, ReleaseStgMedium, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE};
+use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
@@ -41,6 +44,8 @@ pub fn start(ident: Arc<Identity>) {
 }
 
 unsafe fn run() {
+    // OLE drag and drop (the drop target below) needs this thread to be an OLE apartment
+    let _ = OleInitialize(None);
     let Ok(hmod) = GetModuleHandleW(None) else { return };
     let hinst = HINSTANCE(hmod.0);
     let wc = WNDCLASSEXW {
@@ -70,6 +75,12 @@ unsafe fn run() {
         return;
     };
     DragAcceptFiles(hwnd, true);
+    // An OLE drop target sees the files as soon as a drag reaches the edge (not only when you let go), so a
+    // drag can carry on to the computer controlling this one.
+    let target: IDropTarget = Catcher { hwnd: hwnd.0 as isize }.into();
+    if let Err(e) = RegisterDragDrop(hwnd, &target) {
+        shared::warn(&format!("Dragging files across from here works only by letting go at the edge: {e}"));
+    }
     // still accept drops from Explorer if SmoothKvm itself is ever run elevated
     for m in [WM_DROPFILES, WM_COPYDATA, 0x0049 /* WM_COPYGLOBALDATA */] {
         let _ = ChangeWindowMessageFilterEx(hwnd, m, MSGFLT_ALLOW, None);
@@ -287,18 +298,102 @@ unsafe fn paint(hwnd: HWND) {
     let _ = EndPaint(hwnd, &ps);
 }
 
-unsafe fn dropped(hwnd: HWND, hdrop: HDROP) {
-    let n = DragQueryFileW(hdrop, u32::MAX, None);
-    let mut paths = Vec::new();
-    for i in 0..n {
-        let len = DragQueryFileW(hdrop, i, None) as usize;
+/// The files in a drag (Explorer and most apps offer them as CF_HDROP).
+unsafe fn drag_paths(data: &IDataObject) -> Vec<PathBuf> {
+    let fmt = FORMATETC { cfFormat: CF_HDROP.0, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 };
+    let Ok(mut medium) = data.GetData(&fmt) else { return vec![] };
+    let h = HDROP(medium.u.hGlobal.0);
+    let n = DragQueryFileW(h, u32::MAX, None);
+    let mut out = Vec::new();
+    for i in 0..n.min(10_000) {
+        let len = DragQueryFileW(h, i, None) as usize;
         let mut buf = vec![0u16; len + 1];
-        DragQueryFileW(hdrop, i, Some(&mut buf));
-        paths.push(PathBuf::from(String::from_utf16_lossy(&buf[..len])));
+        DragQueryFileW(h, i, Some(&mut buf));
+        out.push(PathBuf::from(String::from_utf16_lossy(&buf[..len])));
     }
-    let mut p = POINT::default();
-    let _ = windows::Win32::UI::Shell::DragQueryPoint(hdrop, &mut p); // client coordinates
-    DragFinish(hdrop);
+    ReleaseStgMedium(&mut medium);
+    out
+}
+
+/// What the drag currently over the edge carries, and whether it already went on to the other computer.
+static CAUGHT: Mutex<(Vec<PathBuf>, bool)> = Mutex::new((Vec::new(), false));
+
+/// Files dragged to the edge that faces the computer controlling this one: hand the drag over to it. It takes
+/// the mouse back and carries on dragging them there, so you can drop them into any folder on that computer.
+fn carry_to_controller(paths: &[PathBuf]) -> bool {
+    let Some(side) = shared::controller_side() else { return false };
+    let facing = WATCH.lock().ok().and_then(|g| g.as_ref().map(|w| w.edge)).map(|e| e == side).unwrap_or(false);
+    if !facing {
+        return false;
+    }
+    let Some(target) = xfer::targets().into_iter().find(|t| t.kind == "controller") else { return false };
+    let Some(ident) = IDENT.get().cloned() else { return false };
+    let mut b = [0u8; 4];
+    let _ = getrandom::getrandom(&mut b);
+    let drag = u32::from_le_bytes(b);
+    let names: Vec<String> = paths.iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string())).collect();
+    if names.is_empty() || !crate::send_to_controller(kvm_protocol::Message::DragStart { drag, names }) {
+        return false;
+    }
+    match xfer::send_async_as(Some(target.name.clone()), paths.to_vec(), ident, Some(drag)) {
+        Ok(_) => true,
+        Err(e) => {
+            shared::warn(&format!("Could not carry the files over: {e}"));
+            false
+        }
+    }
+}
+
+#[implement(IDropTarget)]
+struct Catcher {
+    hwnd: isize,
+}
+
+impl IDropTarget_Impl for Catcher_Impl {
+    fn DragEnter(&self, data: Option<&IDataObject>, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+        let paths = data.map(|d| unsafe { drag_paths(d) }).unwrap_or_default();
+        let ok = !paths.is_empty();
+        let carried = ok && carry_to_controller(&paths);
+        if let Ok(mut c) = CAUGHT.lock() {
+            *c = (paths, carried);
+        }
+        unsafe { *effect = if ok { DROPEFFECT_COPY } else { DROPEFFECT_NONE } };
+        Ok(())
+    }
+
+    fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+        let ok = CAUGHT.lock().map(|c| !c.0.is_empty()).unwrap_or(false);
+        unsafe {
+            hover(HWND(self.hwnd as *mut _), POINT { x: pt.x, y: pt.y });
+            *effect = if ok { DROPEFFECT_COPY } else { DROPEFFECT_NONE };
+        }
+        Ok(())
+    }
+
+    fn DragLeave(&self) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn Drop(&self, _data: Option<&IDataObject>, _keys: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+        let (paths, carried) = CAUGHT.lock().map(|mut c| std::mem::take(&mut *c)).unwrap_or_default();
+        let hwnd = HWND(self.hwnd as *mut _);
+        unsafe {
+            *effect = if paths.is_empty() { DROPEFFECT_NONE } else { DROPEFFECT_COPY };
+            if carried || paths.is_empty() {
+                // already on its way (the drag went on to the other computer): this is only the drag ending here
+                hide(hwnd);
+                return Ok(());
+            }
+            let mut wr = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut wr);
+            send_dropped(hwnd, paths, POINT { x: pt.x - wr.left, y: pt.y - wr.top });
+        }
+        Ok(())
+    }
+}
+
+/// Files let go on the edge: send them to the computer whose part of the edge they were dropped on.
+unsafe fn send_dropped(hwnd: HWND, paths: Vec<PathBuf>, p: POINT) {
     let target = STRIP.lock().ok().and_then(|s| {
         s.segments
             .iter()
@@ -312,6 +407,21 @@ unsafe fn dropped(hwnd: HWND, hdrop: HDROP) {
         Ok(t) => shared::info(&format!("Sending dropped files to {}", t.name)),
         Err(e) => shared::warn(&format!("Could not send the dropped files: {e}")),
     }
+}
+
+unsafe fn dropped(hwnd: HWND, hdrop: HDROP) {
+    let n = DragQueryFileW(hdrop, u32::MAX, None);
+    let mut paths = Vec::new();
+    for i in 0..n {
+        let len = DragQueryFileW(hdrop, i, None) as usize;
+        let mut buf = vec![0u16; len + 1];
+        DragQueryFileW(hdrop, i, Some(&mut buf));
+        paths.push(PathBuf::from(String::from_utf16_lossy(&buf[..len])));
+    }
+    let mut p = POINT::default();
+    let _ = windows::Win32::UI::Shell::DragQueryPoint(hdrop, &mut p); // client coordinates
+    DragFinish(hdrop);
+    send_dropped(hwnd, paths, p);
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {

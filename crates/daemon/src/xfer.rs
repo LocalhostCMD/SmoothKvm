@@ -422,7 +422,6 @@ pub fn safe_rel(path: &str) -> Option<Vec<String>> {
 
 /// "report.pdf" -> "report (2).pdf" until the name is free.
 /// A name that is free in `dir` ("name (2).ext" if "name.ext" is taken).
-#[cfg_attr(unix, allow(dead_code))] // used by the Windows drag
 pub fn unique_name(dir: &Path, name: &str) -> String {
     unique(dir, name)
 }
@@ -459,10 +458,10 @@ pub fn receive(mut conn: SecureConn, peer: &str, count: u32, total: u64, drag: O
         Some(d) => crate::drag_win::staging(d),
         None => inbox(),
     };
-    #[cfg(not(windows))]
-    let root = {
-        let _ = drag;
-        inbox()
+    #[cfg(target_os = "linux")]
+    let root = match drag {
+        Some(d) => crate::drag_x11::staging(d),
+        None => inbox(),
     };
     if let Err(e) = fs::create_dir_all(&root) {
         return conn.send(&Message::FilesResult { ok: false, detail: format!("cannot create {}: {e}", root.display()) });
@@ -483,7 +482,11 @@ pub fn receive(mut conn: SecureConn, peer: &str, count: u32, total: u64, drag: O
             if let Some(d) = drag {
                 crate::drag_win::ready(d, true);
             }
-            if drag.is_none() || cfg!(not(windows)) {
+            #[cfg(target_os = "linux")]
+            if let Some(d) = drag {
+                crate::drag_x11::ready(d, true);
+            }
+            if drag.is_none() {
                 shared::notify(&format!("Received {what} from {peer} -> {}", root.display()));
             }
             conn.send(&Message::FilesResult { ok: true, detail })?;
@@ -493,6 +496,10 @@ pub fn receive(mut conn: SecureConn, peer: &str, count: u32, total: u64, drag: O
             #[cfg(windows)]
             if let Some(d) = drag {
                 crate::drag_win::ready(d, false);
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(d) = drag {
+                crate::drag_x11::ready(d, false);
             }
             shared::warn(&format!("Receiving files from {peer} failed: {e}"));
             let _ = conn.send(&Message::FilesResult { ok: false, detail: e.to_string() });

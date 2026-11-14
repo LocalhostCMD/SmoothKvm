@@ -37,14 +37,13 @@ search while it is showing a code.
   `F2` = emergency stop, `F3` = resume. Left/Right, Home/End, Ctrl+Left/Right and Delete edit the line; Up/Down
   recall earlier commands.
 - **Emergency stop**: red button, tray menu, `stop`, F2, or press **Scroll Lock three times**.
-- **Drag files to the other computer**: just drag them across the screen edge where the other computer is, like
-  onto a second monitor. Nothing pops up. From Ubuntu (Dolphin) to Windows, the pointer carries on with the files
-  "in hand": let go over any Explorer window, the desktop or an app and they are copied right there (if you let go
-  before the copy finishes, the drop waits for it; somewhere that doesn't take files, they go to the received-files
-  folder). In the other direction, let go against the edge and they are copied to the other computer's received-files
-  folder. You can also drop files on the SmoothKvm window, or use `SmoothKvm send <files or folders> [--to <name>]`.
-  Received files land in `Downloads/SmoothKvm` unless you choose another folder (**Send files** -> *Save files I
-  receive in this folder*, or `files folder <path>`); they never overwrite anything and are never opened.
+- **Drag files to the other computer**: drag them across the screen edge, like onto a second monitor, and drop
+  them wherever you want over there: any folder, the desktop, an app. Nothing pops up and you don't stop at the edge.
+  Works both ways between Ubuntu (Dolphin, KDE Plasma) and Windows (Explorer). The files are copied while you carry
+  them; if you let go before the copy has finished, the drop waits for it. Let go somewhere that doesn't take files
+  and they go to the received-files folder (`Downloads/SmoothKvm`, or the folder chosen under **Send files**, or
+  `files folder <path>`). Files never overwrite anything and are never opened. You can also drop files on the
+  SmoothKvm window, or use `SmoothKvm send <files or folders> [--to <name>]`.
 - **Move a screen** to another side after pairing: drag it in the Screens map (terminal: `move <name> <side>`).
 - **Show an app on the other computer** (Windows → Linux, e.g. Fusion 360 from the laptop on the Ubuntu screen):
   drag the app's window by its title bar against the screen edge where the other computer is and hold it there a

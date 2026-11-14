@@ -125,10 +125,16 @@ fn remote_thread(
                     let cs = cs.clone();
                     std::thread::spawn(move || {
                         while let Ok(m) = rd.recv() {
-                            if let Message::Clipboard(t) = m {
-                                if let Ok(mut c) = cs.lock() {
-                                    c.incoming(t);
+                            match m {
+                                Message::Clipboard(t) => {
+                                    if let Ok(mut c) = cs.lock() {
+                                        c.incoming(t);
+                                    }
                                 }
+                                // you are dragging files on that screen against its edge facing this one
+                                #[cfg(target_os = "linux")]
+                                Message::DragStart { drag, names } => crate::capture_linux::drag_from_screen(generation, idx, drag, names),
+                                _ => {}
                             }
                         }
                         rd.shutdown();

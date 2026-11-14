@@ -54,11 +54,16 @@ struct State {
     /// A switch waiting for the delay to pass (cancelled when the pointer leaves the edge).
     pending: Option<u64>,
     pending_seq: u64,
+    /// Where along the edge the pointer left this screen (it is still there while another screen is active).
+    entry_frac: f32,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 /// Devices are grabbed exactly while a remote screen is active.
 static WANT_GRAB: AtomicBool = AtomicBool::new(false);
+/// A drag carried back from another screen is going on here: the button is held down by us (on the virtual
+/// device) until your finger lets go of the real one.
+static CARRYING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 pub struct Controller;
@@ -125,6 +130,7 @@ fn enter(st: &mut State, i: usize, frac: f32) {
         Edge::Bottom => ((frac * rw as f32) as i32, 0, (-20000, -20000), ((frac * rw as f32) as i32, 0)),
     };
     st.active = Some(i);
+    st.entry_frac = frac;
     st.vx = vx.clamp(0, rw - 1);
     st.vy = vy.clamp(0, rh - 1);
     st.send(Message::Enter { edge: r.edge, pos: frac });
@@ -225,6 +231,43 @@ pub fn cross_with_drag(idx: usize, frac: f32, names: Vec<String>, drag: u32) -> 
         crate::inject_linux::inject(&InputEvent::MouseButton { button: MouseButton::Left, pressed: false });
     });
     true
+}
+
+/// Screen `idx` (generation `generation`) says you are dragging `names` against its edge that faces this
+/// computer: bring the drag home. A drag window appears where the pointer is waiting here, the mouse comes
+/// back, and the button you are still holding is pressed on that window, which carries the files on.
+pub fn drag_from_screen(generation: u64, idx: usize, drag: u32, names: Vec<String>) {
+    let (edge, frac) = {
+        let Ok(g) = STATE.lock() else { return };
+        let Some(st) = g.as_ref() else { return };
+        if st.generation != generation || st.active != Some(idx) || !st.buttons.contains(&0) {
+            return;
+        }
+        let Some(r) = st.cfg.remotes.get(idx) else { return };
+        (r.edge, st.entry_frac)
+    };
+    let go = Box::new(move || {
+        {
+            let Ok(mut g) = STATE.lock() else { return false };
+            let Some(st) = g.as_mut() else { return false };
+            if st.generation != generation || st.active != Some(idx) || !st.buttons.contains(&0) {
+                return false; // let go over there already, or switched away
+            }
+            leave(st);
+            st.armed = false;
+            CARRYING.store(true, Ordering::SeqCst);
+        }
+        crate::inject_linux::inject(&InputEvent::MouseButton { button: MouseButton::Left, pressed: true });
+        true
+    });
+    crate::drag_x11::begin(names, drag, edge, frac, go);
+}
+
+/// The carried drag is over (dropped or given up): let go of the button we were holding.
+pub fn end_carried_drag() {
+    if CARRYING.swap(false, Ordering::SeqCst) {
+        crate::inject_linux::inject(&InputEvent::MouseButton { button: MouseButton::Left, pressed: false });
+    }
 }
 
 /// Files were dropped on the strip for screen `idx`: carry on over there.
@@ -402,6 +445,7 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
         strip_shown: false,
         pending: None,
         pending_seq: 0,
+        entry_frac: 0.5,
     });
     std::thread::spawn(scanner);
     crate::edge_linux::start();
@@ -592,6 +636,10 @@ fn handle(kind: u16, code: u16, value: i32, acc: (&mut i32, &mut i32, &mut i32, 
                         } else if pressed {
                             st.local_buttons.insert(b);
                         }
+                        if !pressed && b == 0 && st.active.is_none() && CARRYING.load(Ordering::SeqCst) {
+                            // your finger left the button during a drag carried back here: drop it
+                            crate::drag_x11::let_go();
+                        }
                         if !pressed {
                             st.local_buttons.remove(&b);
                             if st.local_buttons.is_empty() && st.strip_shown {
@@ -689,6 +737,7 @@ mod tests {
             strip_shown: false,
         pending: None,
         pending_seq: 0,
+        entry_frac: 0.5,
         };
         (st, rxs)
     }
