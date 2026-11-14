@@ -174,6 +174,14 @@ pub fn edge_hit(side: Edge, frac: f32, px: Option<(i64, i64)>) {
     let Some(i) = st.cfg.remotes.iter().enumerate().position(|(i, r)| r.enabled && r.edge == side && st.connected.get(i).copied().unwrap_or(false)) else {
         return;
     };
+    // a screen placed at its real size may border only part of this side
+    let frac = match px {
+        Some((along, len)) => match st.cfg.remotes[i].enter_frac(along, len) {
+            Some(f) => f,
+            None => return,
+        },
+        None => frac,
+    };
     if !st.local_buttons.is_empty() {
         // Dragging something against the edge: offer the drop strip (files dropped there are sent over, and
         // the pointer then follows). Crossing with the button still down would leave the drag hanging here.
@@ -388,6 +396,15 @@ impl Controller {
                 st.generation = generation;
                 st.connected = vec![false; senders.len()];
                 st.senders = senders;
+                st.cfg = cfg;
+            }
+        }
+    }
+
+    /// New settings that don't change which computers to connect to: keep the connections (and control).
+    pub fn update_config(&self, cfg: Config) {
+        if let Ok(mut g) = STATE.lock() {
+            if let Some(st) = g.as_mut() {
                 st.cfg = cfg;
             }
         }

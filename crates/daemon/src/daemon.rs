@@ -18,6 +18,20 @@ use std::time::Duration;
 
 static GEN: AtomicU64 = AtomicU64::new(0);
 
+/// What the running connections were started for: (name, address, enabled) per screen, the generation, and
+/// each screen's queue. A settings change that leaves these alone keeps every connection (and control) as is.
+type Running = (Vec<(String, String, bool)>, u64, Vec<std::sync::mpsc::Sender<Message>>);
+static RUNNING: std::sync::Mutex<Option<Running>> = std::sync::Mutex::new(None);
+
+/// Change one screen's saved settings (learned from the connection itself). Keeps the connections.
+fn update_remote(name: &str, f: impl FnOnce(&mut Remote) -> bool) {
+    let mut cfg = store::load_config();
+    let Some(r) = cfg.remotes.iter_mut().find(|r| r.name == name) else { return };
+    if f(r) && cfg.validate().is_ok() {
+        let _ = store::save_config(&cfg);
+    }
+}
+
 #[cfg(windows)]
 /// Start everything except the window: input capture, one connection per screen, the panel
 /// server and a config watcher. Returns immediately; the work runs on background threads.
@@ -50,6 +64,18 @@ pub fn start_backend() -> io::Result<()> {
 }
 
 fn apply(cfg: &Config, ctl: &Controller, ident: &Arc<Identity>) {
+    let links: Vec<_> = cfg.remotes.iter().map(|r| (r.name.clone(), r.addr.clone(), r.enabled)).collect();
+    if let Ok(g) = RUNNING.lock() {
+        if let Some((l, _, _)) = g.as_ref() {
+            if *l == links {
+                ctl.update_config(cfg.clone());
+                crate::clip::ENABLED.store(cfg.clipboard, Ordering::SeqCst);
+                #[cfg(windows)]
+                crate::sync_receiver(cfg.receive, cfg.port);
+                return;
+            }
+        }
+    }
     let generation = GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let mut senders = Vec::new();
     for (i, r) in cfg.remotes.iter().enumerate() {
@@ -61,6 +87,9 @@ fn apply(cfg: &Config, ctl: &Controller, ident: &Arc<Identity>) {
         } else {
             shared::set_status(&r.name, "disabled", "");
         }
+    }
+    if let Ok(mut g) = RUNNING.lock() {
+        *g = Some((links, generation, senders.clone()));
     }
     ctl.set_remotes(generation, cfg.clone(), senders);
     crate::clip::ENABLED.store(cfg.clipboard, Ordering::SeqCst);
@@ -87,6 +116,7 @@ fn remote_thread(
     ctl: Controller,
 ) {
     let mut last_err = String::new();
+    let mut fails = 0u32;
     while GEN.load(Ordering::SeqCst) == generation {
         if r.addr.trim().is_empty() {
             shared::set_status(&r.name, "offline", "no address set");
@@ -95,10 +125,18 @@ fn remote_thread(
         }
         shared::set_status(&r.name, "connecting", "");
         let pin = shared::take_pair_request(&r.name);
-        match net::connect(&r.addr, &ident, pin.as_deref(), &r.name) {
-            Ok(mut conn) => {
+        match net::connect_keyed(&r.addr, &ident, pin.as_deref(), &r.name) {
+            Ok((mut conn, key)) => {
                 shared::set_status(&r.name, "connected", "");
                 shared::info(&format!("Connected to {} ({})", r.name, r.addr));
+                fails = 0;
+                // remember who this is, so it can be found again if its address changes
+                if r.key != key {
+                    update_remote(&r.name, |x| {
+                        x.key = key.clone();
+                        true
+                    });
+                }
                 last_err.clear();
                 while rx.try_recv().is_ok() {}
                 ctl.set_connected(generation, idx, true);
@@ -123,9 +161,22 @@ fn remote_thread(
                 {
                     // The other computer may send its clipboard text (applied only when sharing is on).
                     let cs = cs.clone();
+                    let name = r.name.clone();
                     std::thread::spawn(move || {
                         while let Ok(m) = rd.recv() {
                             match m {
+                                // its real monitors: drawn on the map, and the size used for crossing over
+                                Message::ScreenInfo { width, height, monitors } => {
+                                    let (w, h) = (width.clamp(100, 20000), height.clamp(100, 20000));
+                                    let monitors: Vec<[i32; 4]> = monitors.into_iter().take(16).collect();
+                                    shared::set_screen(&name, shared::ScreenShape { width: w, height: h, monitors });
+                                    update_remote(&name, |x| {
+                                        let changed = (x.width, x.height) != (w, h);
+                                        x.width = w;
+                                        x.height = h;
+                                        changed
+                                    });
+                                }
                                 Message::Clipboard(t) => {
                                     if let Ok(mut c) = cs.lock() {
                                         c.incoming(t);
@@ -198,6 +249,25 @@ fn remote_thread(
                     last_err = msg.clone();
                 }
                 shared::set_status(&r.name, state, &msg);
+                fails += 1;
+                // Unreachable a few times in a row: it may have a new address (DHCP, another network).
+                // Ask the network for it by its device key, and move it there if it answers.
+                if state == "offline" && fails % 3 == 0 && !r.key.is_empty() {
+                    if let Some(k) = kvm_protocol::secure::from_hex(&r.key) {
+                        let port = r.addr.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).unwrap_or(24800);
+                        if let Some(found) = crate::discover::locate(port, &ident.public, &k) {
+                            let new = found.to_string();
+                            if new != r.addr {
+                                shared::info(&format!("Found {} at a new address: {new} (was {})", r.name, r.addr));
+                                update_remote(&r.name, |x| {
+                                    x.addr = new.clone();
+                                    true
+                                });
+                                return; // the new address restarts this connection
+                            }
+                        }
+                    }
+                }
             }
         }
         sleep_until_event(generation, &r.name, Duration::from_secs(3));

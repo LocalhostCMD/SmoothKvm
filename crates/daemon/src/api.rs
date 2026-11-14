@@ -20,6 +20,8 @@ pub fn extra_state(v: &mut Value) {
     v["addrs"] = json!(discover::local_addrs());
     v["port"] = json!(store::load_config().port);
     v["update"] = update::state();
+    v["screens"] = json!(shared::screens());
+    v["local_screen"] = json!(crate::screens::layout());
 }
 
 fn edge_of(s: &str) -> Option<Edge> {

@@ -20,6 +20,26 @@ pub struct Status {
 }
 
 static STATUS: Mutex<Option<HashMap<String, Status>>> = Mutex::new(None);
+
+/// What a connected screen told us about its monitors (for the map in the app window).
+#[derive(Clone, Serialize, PartialEq, Debug)]
+pub struct ScreenShape {
+    pub width: u32,
+    pub height: u32,
+    pub monitors: Vec<[i32; 4]>,
+}
+
+static SCREENS: Mutex<Option<HashMap<String, ScreenShape>>> = Mutex::new(None);
+
+pub fn set_screen(name: &str, s: ScreenShape) {
+    if let Ok(mut g) = SCREENS.lock() {
+        g.get_or_insert_with(HashMap::new).insert(name.to_string(), s);
+    }
+}
+
+pub fn screens() -> HashMap<String, ScreenShape> {
+    SCREENS.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
+}
 static PAIR_REQ: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 /// Drop control characters so remote-controlled text can never inject terminal escape sequences.

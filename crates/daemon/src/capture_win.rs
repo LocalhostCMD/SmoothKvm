@@ -73,6 +73,15 @@ impl Controller {
         }
     }
 
+    /// New settings that don't change which computers to connect to: keep the connections (and control).
+    pub fn update_config(&self, cfg: Config) {
+        if let Ok(mut g) = STATE.lock() {
+            if let Some(st) = g.as_mut() {
+                st.cfg = cfg;
+            }
+        }
+    }
+
     pub fn set_connected(&self, generation: u64, idx: usize, connected: bool) {
         if let Ok(mut g) = STATE.lock() {
             if let Some(st) = g.as_mut() {
@@ -192,6 +201,29 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
 
 // ---- switching logic -------------------------------------------------------
 
+/// (pixels along `edge` of the desktop, that edge's length) for point `p`.
+fn along_edge(b: (i32, i32, i32, i32), edge: Edge, p: POINT) -> (i64, i64) {
+    let (l, t, r, bot) = b;
+    match edge {
+        Edge::Left | Edge::Right => ((p.y - t) as i64, (bot - t) as i64),
+        Edge::Top | Edge::Bottom => ((p.x - l) as i64, (r - l) as i64),
+    }
+}
+
+/// Does touching the desktop edge at `p` cross onto screen `rem`? Only where it borders this desktop (a
+/// screen placed at its real size may cover just part of the side), and never in the corners of either.
+fn remote_hit(b: (i32, i32, i32, i32), rem: &kvm_protocol::Remote, p: POINT, corner: u32) -> bool {
+    if !edge_hit(b, rem.edge, p, corner) {
+        return false;
+    }
+    let (along, len) = along_edge(b, rem.edge, p);
+    match (rem.offset, rem.enter_frac(along, len)) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(o), Some(_)) => !kvm_protocol::in_corner(along - o as i64, rem.len_along(), corner),
+    }
+}
+
 fn edge_hit(b: (i32, i32, i32, i32), edge: Edge, p: POINT, corner: u32) -> bool {
     let (l, t, r, bot) = b;
     let on = match edge {
@@ -217,7 +249,7 @@ fn find_target(st: &State, p: POINT) -> Option<usize> {
         .remotes
         .iter()
         .enumerate()
-        .find(|(i, r)| r.enabled && st.connected.get(*i) == Some(&true) && edge_hit(st.bounds, r.edge, p, st.cfg.corner_px))
+        .find(|(i, r)| r.enabled && st.connected.get(*i) == Some(&true) && remote_hit(st.bounds, r, p, st.cfg.corner_px))
         .map(|(i, _)| i)
 }
 
@@ -240,10 +272,10 @@ fn game_blocks(st: &mut State) -> bool {
 
 fn enter_remote(st: &mut State, idx: usize, p: POINT) {
     let r = st.cfg.remotes[idx].clone();
-    let (l, t, rr, b) = st.bounds;
     let (rw, rh) = (r.width as i32, r.height as i32);
-    let fy = ((p.y - t) as f32 / (b - t).max(1) as f32).clamp(0.0, 1.0);
-    let fx = ((p.x - l) as f32 / (rr - l).max(1) as f32).clamp(0.0, 1.0);
+    let (along, len) = along_edge(st.bounds, r.edge, p);
+    let f = r.enter_frac(along, len).unwrap_or(0.5);
+    let (fx, fy) = (f, f);
     // (position along the edge, start of virtual cursor, "snap to corner" move, follow-up move)
     let (frac, vx, vy, snap, follow) = match r.edge {
         Edge::Right => (fy, 0, (fy * rh as f32) as i32, (-20000, -20000), (0, (fy * rh as f32) as i32)),
@@ -286,11 +318,13 @@ fn leave_remote(st: &mut State) {
     let (rw, rh) = (r.width.max(1) as f32, r.height.max(1) as f32);
     let fy = (st.vy as f32 / rh).clamp(0.0, 1.0);
     let fx = (st.vx as f32 / rw).clamp(0.0, 1.0);
+    let ys = t + r.leave_along(fy, (b - t) as i64) as i32;
+    let xs = l + r.leave_along(fx, (rr - l) as i64) as i32;
     let (x, y) = match r.edge {
-        Edge::Right => (rr - 2, t + (fy * (b - t) as f32) as i32),
-        Edge::Left => (l + 1, t + (fy * (b - t) as f32) as i32),
-        Edge::Top => (l + (fx * (rr - l) as f32) as i32, t + 1),
-        Edge::Bottom => (l + (fx * (rr - l) as f32) as i32, b - 2),
+        Edge::Right => (rr - 2, ys),
+        Edge::Left => (l + 1, ys),
+        Edge::Top => (xs, t + 1),
+        Edge::Bottom => (xs, b - 2),
     };
     st.send(Message::Leave);
     st.active = None;

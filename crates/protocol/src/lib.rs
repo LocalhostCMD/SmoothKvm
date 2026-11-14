@@ -100,6 +100,10 @@ pub enum Message {
     DragStart { drag: u32, names: Vec<String> },
     /// First message of a file-transfer session whose files belong to drag `drag` (otherwise like `SendFiles`).
     DragFiles { drag: u32, count: u32, total: u64 },
+    // ---- 0.10: only sent to peers that announced version >= 10 ----
+    /// A controlled computer's real screen: the size of its whole desktop and each monitor in it
+    /// (x, y, width, height, relative to the desktop's top-left), so the controller can draw it on its map.
+    ScreenInfo { width: u32, height: u32, monitors: Vec<[i32; 4]> },
 }
 
 /// What the viewer sends back. Coordinates are in the window's own pixels (0,0 = top-left of its content).
@@ -115,7 +119,7 @@ pub enum WindowEvent {
 }
 
 /// Protocol version spoken by this build (in `Announce`).
-pub const PROTO_VERSION: u16 = 9;
+pub const PROTO_VERSION: u16 = 10;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AnimationStyle {
@@ -306,6 +310,40 @@ mod tests {
     }
 
     #[test]
+    fn placing_a_screen_by_real_size() {
+        let mut r = Remote { edge: Edge::Right, width: 1920, height: 1080, ..Remote::default() };
+        // fills the side: scaled
+        assert_eq!(r.enter_frac(720, 1440), Some(0.5));
+        assert_eq!(r.leave_along(0.5, 1440), 720);
+        // real size, lined up 200 px down a 1440 px side
+        r.offset = Some(200);
+        assert_eq!(r.enter_frac(100, 1440), None, "above it: no crossing");
+        assert_eq!(r.enter_frac(200, 1440), Some(0.0));
+        assert_eq!(r.enter_frac(740, 1440), Some(0.5));
+        assert_eq!(r.enter_frac(1280, 1440), None, "below it");
+        assert_eq!(r.leave_along(0.5, 1440), 740);
+        // hanging off the end: comes back clamped onto this screen
+        r.offset = Some(1000);
+        assert_eq!(r.leave_along(1.0, 1440), 1439);
+        // a top screen uses widths
+        let t = Remote { edge: Edge::Top, width: 1000, height: 800, offset: Some(-500), ..Remote::default() };
+        assert_eq!(t.enter_frac(0, 2560), Some(0.5));
+    }
+
+    #[test]
+    fn old_screens_without_key_or_position_still_load() {
+        let old = "name = \"pc\"
+addr = \"1.2.3.4:24800\"
+edge = \"Left\"
+width = 1920
+height = 1080
+enabled = true
+";
+        let r: Remote = toml::from_str(old).unwrap();
+        assert_eq!((r.key.as_str(), r.offset), ("", None));
+    }
+
+    #[test]
     fn linear_bezier_is_identity() {
         let a = Animation { style: AnimationStyle::Custom, curve: [0.0, 0.0, 1.0, 1.0], ..Animation::default() };
         for i in 1..10 {
@@ -327,11 +365,55 @@ pub struct Remote {
     pub width: u32,
     pub height: u32,
     pub enabled: bool,
+    /// The other computer's device key (hex), learned when it first connects. Lets this computer find it
+    /// again on the network if its address changes. Empty until then.
+    pub key: String,
+    /// Where it sits along its side, in this computer's pixels: `None` = it fills the whole side (the
+    /// pointer crosses anywhere along the edge, scaled); `Some(o)` = real size, its top (left/right side) or
+    /// left (top/bottom side) edge `o` pixels from this desktop's top or left, like monitors in display settings.
+    pub offset: Option<i32>,
 }
 
 impl Default for Remote {
     fn default() -> Self {
-        Self { name: "Screen".into(), addr: String::new(), edge: Edge::Right, width: 1920, height: 1080, enabled: true }
+        Self { name: "Screen".into(), addr: String::new(), edge: Edge::Right, width: 1920, height: 1080, enabled: true, key: String::new(), offset: None }
+    }
+}
+
+impl Remote {
+    /// Its length along the side it is on, in its own pixels.
+    pub fn len_along(&self) -> i64 {
+        match self.edge {
+            Edge::Left | Edge::Right => self.height.max(1) as i64,
+            Edge::Top | Edge::Bottom => self.width.max(1) as i64,
+        }
+    }
+
+    /// The pointer touched this side `along` pixels into an edge `local_len` long: where it comes out over
+    /// there, 0..1 along that screen's edge. `None` = this part of the edge doesn't border it.
+    pub fn enter_frac(&self, along: i64, local_len: i64) -> Option<f32> {
+        match self.offset {
+            None => Some((along as f32 / local_len.max(1) as f32).clamp(0.0, 1.0)),
+            Some(o) => {
+                let rel = along - o as i64;
+                let len = self.len_along();
+                if rel < 0 || rel >= len {
+                    None
+                } else {
+                    Some((rel as f32 / len as f32).clamp(0.0, 1.0))
+                }
+            }
+        }
+    }
+
+    /// Coming back at `frac` (0..1 along its edge): how far along this computer's edge the pointer appears.
+    pub fn leave_along(&self, frac: f32, local_len: i64) -> i64 {
+        let frac = frac.clamp(0.0, 1.0) as f64;
+        let v = match self.offset {
+            None => frac * local_len as f64,
+            Some(o) => o as f64 + frac * self.len_along() as f64,
+        };
+        (v as i64).clamp(0, (local_len - 1).max(0))
     }
 }
 
@@ -442,6 +524,14 @@ impl Config {
             }
             if !(100..=20000).contains(&r.width) || !(100..=20000).contains(&r.height) {
                 return Err(format!("{n}: screen size out of range"));
+            }
+            if r.key.len() > 128 || !r.key.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(format!("{n}: invalid device key"));
+            }
+            if let Some(o) = r.offset {
+                if !(-40000..=40000).contains(&o) {
+                    return Err(format!("{n}: position out of range"));
+                }
             }
             if r.enabled {
                 if edges.contains(&r.edge) {

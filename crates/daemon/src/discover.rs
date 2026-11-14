@@ -10,6 +10,30 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 const QUESTION: &[u8] = b"SMOOTHKVM-DISCOVER 1";
+/// "Is my paired computer here?": followed by a random nonce and a tag (both hex). Only a computer holding
+/// one of the two device keys can make or check the tag, so nobody else learns anything from it.
+const FIND: &str = "SMOOTHKVM-FIND 1 ";
+
+/// The tag for the pair (a, b) and `nonce`; the same whichever side computes it.
+fn find_tag(a: &[u8], b: &[u8], nonce: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let mut h = Sha256::new();
+    h.update(b"smoothkvm-find-v1");
+    h.update(lo);
+    h.update(hi);
+    h.update(nonce);
+    kvm_protocol::secure::to_hex(&h.finalize()[..16])
+}
+
+/// The paired computer whose tag this is, if any.
+fn find_match(my_pub: &[u8], nonce: &[u8], tag: &str, peers: &[Vec<u8>]) -> bool {
+    peers.iter().any(|k| {
+        let t = find_tag(my_pub, k, nonce);
+        // constant-time compare (both are 32 hex chars)
+        t.len() == tag.len() && t.bytes().zip(tag.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    })
+}
 
 #[derive(Clone, Serialize, PartialEq, Debug)]
 pub struct Found {
@@ -69,8 +93,9 @@ pub fn is_tailscale(ip: &str) -> bool {
     }
 }
 
-/// Answer discovery questions on UDP `port` while pairing is open. Runs for the life of the receiver.
-pub fn start_responder(port: u16, my_id: String) {
+/// Answer discovery questions on UDP `port`: "who is open for pairing" while pairing is open, and
+/// "is my paired computer here" from computers paired with this one. Runs for the life of the receiver.
+pub fn start_responder(port: u16, my_id: String, my_pub: Vec<u8>) {
     std::thread::spawn(move || {
         let sock = match UdpSocket::bind(("0.0.0.0", port)) {
             Ok(s) => s,
@@ -84,10 +109,21 @@ pub fn start_responder(port: u16, my_id: String) {
         let mut last: Option<(IpAddr, Instant)> = None;
         loop {
             let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
-            if &buf[..n] != QUESTION || crate::shared::pairing_remaining() == 0 {
+            if !crate::RECEIVE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
                 continue;
             }
-            if !crate::RECEIVE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
+            let find = std::str::from_utf8(&buf[..n]).ok().and_then(|s| s.strip_prefix(FIND)).and_then(|s| {
+                let (nonce, tag) = s.trim().split_once(' ')?;
+                Some((kvm_protocol::secure::from_hex(nonce)?, tag.to_string()))
+            });
+            let answer_find = match &find {
+                Some((nonce, tag)) if nonce.len() == 16 && tag.len() == 32 => {
+                    let keys: Vec<Vec<u8>> = crate::store::Peers::load().peers.iter().filter_map(|p| kvm_protocol::secure::from_hex(&p.key)).collect();
+                    find_match(&my_pub, nonce, tag, &keys)
+                }
+                _ => false,
+            };
+            if !answer_find && (&buf[..n] != QUESTION || crate::shared::pairing_remaining() == 0) {
                 continue;
             }
             // at most one answer per second to the same address: no use as a traffic amplifier
@@ -97,7 +133,10 @@ pub fn start_responder(port: u16, my_id: String) {
                 }
             }
             last = Some((from.ip(), Instant::now()));
-            let reply = serde_json::json!({"skvm": 1, "name": hostname(), "port": port, "id": my_id}).to_string();
+            let reply = match &find {
+                Some((_, tag)) if answer_find => serde_json::json!({"skvm": 1, "port": port, "found": tag}).to_string(),
+                _ => serde_json::json!({"skvm": 1, "name": hostname(), "port": port, "id": my_id}).to_string(),
+            };
             let _ = sock.send_to(reply.as_bytes(), from);
         }
     });
@@ -132,10 +171,8 @@ fn tailscale_peers() -> Vec<Ipv4Addr> {
     ips
 }
 
-/// Ask the network which SmoothKvm computers are open for pairing right now (takes about 1.5 seconds).
-pub fn scan(port: u16, my_id: &str) -> Vec<Found> {
-    let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else { return vec![] };
-    let _ = sock.set_broadcast(true);
+/// Where to ask: the LAN broadcast addresses and each online Tailscale peer, on `port` (and the default port).
+fn ask_targets(port: u16) -> Vec<SocketAddr> {
     let mut ports = vec![port];
     if port != 24800 {
         ports.push(24800);
@@ -158,6 +195,45 @@ pub fn scan(port: u16, my_id: &str) -> Vec<Found> {
         #[cfg(test)]
         targets.push(SocketAddr::from((Ipv4Addr::LOCALHOST, *p)));
     }
+    targets
+}
+
+/// Find the paired computer with device key `peer_key` on the network (it may have a new address).
+/// Takes up to about 1.5 seconds. Only that computer can answer, and connecting still proves who it is.
+pub fn locate(port: u16, my_pub: &[u8], peer_key: &[u8]) -> Option<SocketAddr> {
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    let _ = sock.set_broadcast(true);
+    let mut nonce = [0u8; 16];
+    getrandom::getrandom(&mut nonce).ok()?;
+    let tag = find_tag(my_pub, peer_key, &nonce);
+    let q = format!("{FIND}{} {tag}", kvm_protocol::secure::to_hex(&nonce));
+    let targets = ask_targets(port);
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(150)));
+    let start = Instant::now();
+    let mut sent_round = 0;
+    while start.elapsed() < Duration::from_millis(1500) {
+        if sent_round < 2 && start.elapsed() >= Duration::from_millis(600 * sent_round) {
+            for t in &targets {
+                let _ = sock.send_to(q.as_bytes(), t);
+            }
+            sent_round += 1;
+        }
+        let mut buf = [0u8; 512];
+        let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&buf[..n]) else { continue };
+        if v["skvm"] == 1 && v["found"].as_str() == Some(tag.as_str()) {
+            let p = v["port"].as_u64().filter(|p| (1..=65535).contains(p)).unwrap_or(24800) as u16;
+            return Some(SocketAddr::new(from.ip(), p));
+        }
+    }
+    None
+}
+
+/// Ask the network which SmoothKvm computers are open for pairing right now (takes about 1.5 seconds).
+pub fn scan(port: u16, my_id: &str) -> Vec<Found> {
+    let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else { return vec![] };
+    let _ = sock.set_broadcast(true);
+    let targets = ask_targets(port);
     let _ = sock.set_read_timeout(Some(Duration::from_millis(150)));
     let mut found: Vec<Found> = Vec::new();
     let mut seen = HashSet::new();
@@ -200,9 +276,21 @@ mod tests {
     }
 
     #[test]
+    fn find_tags_need_both_keys() {
+        let (a, b, c) = ([1u8; 32], [2u8; 32], [3u8; 32]);
+        let n = [9u8; 16];
+        assert_eq!(find_tag(&a, &b, &n), find_tag(&b, &a, &n), "same from either side");
+        assert_ne!(find_tag(&a, &b, &n), find_tag(&a, &c, &n));
+        assert_ne!(find_tag(&a, &b, &n), find_tag(&a, &b, &[8u8; 16]), "fresh every time");
+        let t = find_tag(&a, &b, &n);
+        assert!(find_match(&b, &n, &t, &[c.to_vec(), a.to_vec()]));
+        assert!(!find_match(&b, &n, &t, &[c.to_vec()]), "only a paired computer answers");
+    }
+
+    #[test]
     fn finds_a_computer_only_while_pairing_is_open() {
         let port = 34871;
-        start_responder(port, "aaaa-bbbb".into());
+        start_responder(port, "aaaa-bbbb".into(), vec![7u8; 32]);
         std::thread::sleep(Duration::from_millis(200));
         crate::shared::burn_pairing();
         assert!(scan(port, "me").iter().all(|f| f.id != "aaaa-bbbb"), "must stay silent while pairing is closed");

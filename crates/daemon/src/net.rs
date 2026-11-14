@@ -39,6 +39,11 @@ pub fn authorize(conn: &mut SecureConn, remote: &[u8], pin_paired: bool, name: &
 
 /// Connect to a receiver. `pin = Some(..)` pairs with it (the PIN is shown on the receiver).
 pub fn connect(addr: &str, ident: &Identity, pin: Option<&str>, name: &str) -> io::Result<SecureConn> {
+    connect_keyed(addr, ident, pin, name).map(|(c, _)| c)
+}
+
+/// Like `connect`, and also returns the other computer's device key (hex).
+pub fn connect_keyed(addr: &str, ident: &Identity, pin: Option<&str>, name: &str) -> io::Result<(SecureConn, String)> {
     let sock = addr
         .to_socket_addrs()?
         .next()
@@ -49,7 +54,7 @@ pub fn connect(addr: &str, ident: &Identity, pin: Option<&str>, name: &str) -> i
     let label = if name.is_empty() { sock.ip().to_string() } else { name.to_string() };
     authorize(&mut conn, &est.remote_key, est.pin_paired, &label)?;
     conn.set_timeouts(None, Some(Duration::from_secs(5)))?;
-    Ok(conn)
+    Ok((conn, kvm_protocol::secure::to_hex(&est.remote_key)))
 }
 
 /// Copy bytes between a local TCP socket and the encrypted connection, both directions.

@@ -38,6 +38,7 @@ mod httpd;
 mod update;
 mod net;
 mod rctl;
+mod screens;
 mod shared;
 mod store;
 mod tui;
@@ -270,7 +271,14 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
                 return Err(io::Error::new(io::ErrorKind::Unsupported, "showing app windows from other computers works on Linux so far"));
             }
         }
-        Message::Announce { port, .. } => shared::session_control(id, Some(port)),
+        Message::Announce { port, version } => {
+            shared::session_control(id, Some(port));
+            // newer controllers draw this screen on their map at its real size
+            if version >= 10 {
+                let s = screens::layout();
+                conn.send(&Message::ScreenInfo { width: s.width, height: s.height, monitors: s.monitors })?;
+            }
+        }
         other => {
             shared::session_control(id, None);
             if let Message::Enter { edge, .. } = &other {
@@ -405,7 +413,7 @@ fn serve(addr: &str, pair: bool, ctl_server: bool) -> io::Result<()> {
     println!("SmoothKvm receiver {VERSION} listening on {addr} (device id {})", store::short(&secure::to_hex(&ident.public)));
     shared::info(&format!("Listening for paired controllers on {addr}. Unpaired connections are refused and logged as alerts."));
     // Lets the "Add a computer" screen on the other machine find this one, but only while pairing is open.
-    discover::start_responder(listener.local_addr()?.port(), api::my_id(&ident));
+    discover::start_responder(listener.local_addr()?.port(), api::my_id(&ident), ident.public.clone());
     if ctl_server {
         update::start_checker();
         let token = store::panel_token()?;
