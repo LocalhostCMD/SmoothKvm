@@ -292,6 +292,20 @@ mod tests {
     }
 
     #[test]
+    fn old_settings_get_clipboard_on_once() {
+        // saved by an older version (no settings_rev): clipboard was off by default then
+        let mut old = Config { clipboard: false, settings_rev: 0, ..Config::default() };
+        assert_eq!(old.settings_rev, 0);
+        old.upgrade();
+        assert!(old.clipboard);
+        // turned off again afterwards: stays off
+        let mut later = Config { clipboard: false, settings_rev: 1, ..Config::default() };
+        later.upgrade();
+        assert!(!later.clipboard);
+        assert!(Config::default().clipboard, "on for new installs");
+    }
+
+    #[test]
     fn linear_bezier_is_identity() {
         let a = Animation { style: AnimationStyle::Custom, curve: [0.0, 0.0, 1.0, 1.0], ..Animation::default() };
         for i in 1..10 {
@@ -333,7 +347,7 @@ pub struct Config {
     pub game_guard: bool,
     /// Let paired computers control THIS machine too (it listens on `port`). Off by default.
     pub receive: bool,
-    /// Share copied TEXT with paired computers while connected (off by default; never logged).
+    /// Share copied TEXT with paired computers while connected (on by default; never logged).
     pub clipboard: bool,
     pub animation: Animation,
     /// Accept files that paired computers send (saved to Downloads/SmoothKvm, never opened or run).
@@ -350,7 +364,13 @@ pub struct Config {
     /// The ends of each edge (this many pixels from a corner) never switch: that is where close buttons,
     /// menus and the clock are.
     pub corner_px: u32,
+    /// Which built-in defaults this file has been brought up to (see `upgrade`). Missing in old files = 0.
+    #[serde(default)]
+    pub settings_rev: u32,
 }
+
+/// Current `Config::settings_rev`.
+pub const SETTINGS_REV: u32 = 1;
 
 impl Default for Config {
     fn default() -> Self {
@@ -360,7 +380,7 @@ impl Default for Config {
             escape_hid: 0x47,
             game_guard: true,
             receive: false,
-            clipboard: false,
+            clipboard: true,
             animation: Animation::default(),
             file_drop: true,
             drop_edge: Edge::Right,
@@ -368,6 +388,7 @@ impl Default for Config {
             inbox_dir: String::new(),
             switch_delay_ms: 150,
             corner_px: 60,
+            settings_rev: SETTINGS_REV,
         }
     }
 }
@@ -379,6 +400,15 @@ pub fn in_corner(along: i64, len: i64, corner: u32) -> bool {
 }
 
 impl Config {
+    /// Bring settings saved by an older version up to today's defaults, once (a later choice is kept).
+    pub fn upgrade(&mut self) {
+        if self.settings_rev < 1 {
+            // copy and paste between the computers now just works, like on one computer
+            self.clipboard = true;
+        }
+        self.settings_rev = SETTINGS_REV;
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.port < 1024 {
             return Err("port must be 1024-65535".into());

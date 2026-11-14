@@ -1,6 +1,7 @@
-//! Linux: the "drop here to send" strip. While you drag something (mouse button held) against the side of the
-//! screen where another computer is, a strip appears there; drop files on it and they are sent to that
-//! computer, and the pointer then carries on over there.
+//! Linux: carrying a drag across the screen edge. While you drag something (mouse button held) against the
+//! side of the screen where another computer is, an invisible catcher appears along that edge. A file drag that
+//! rests there for a moment is carried over (the pointer goes on to the other computer with the files in hand);
+//! if that is not possible, letting go on the edge still sends the files over. Nothing is ever shown.
 //!
 //! It is a plain X11 window speaking the XDND drag-and-drop protocol. KDE Plasma on Wayland passes drags from
 //! Wayland apps (Dolphin, the desktop, ...) to X11 windows, and libX11 is part of every desktop install, so it is
@@ -106,9 +107,8 @@ struct Atoms {
     prop: Atom,
 }
 
-const BLUE: c_ulong = 0x3b6df0;
-const BLUE_HOT: c_ulong = 0x1f9d55;
-const THICK: i32 = 90;
+/// The catcher hugs the very edge (the pointer sits on the last pixels while you push against it).
+const THICK: i32 = 6;
 
 impl Strip {
     fn atom(x: &X, dpy: *mut Display, name: &str) -> Atom {
@@ -120,11 +120,10 @@ impl Strip {
             let s = (self.x.XDefaultScreen)(self.dpy);
             ((self.x.XDisplayWidth)(self.dpy, s), (self.x.XDisplayHeight)(self.dpy, s))
         };
-        // centred where the pointer is, 40% of the edge long (but always covering the pointer)
+        // the whole edge (the corners never switch, but the catcher is harmless there)
         let along = |len: i32| -> (i32, i32) {
-            let l = (len as f32 * 0.4) as i32;
-            let c = (frac.clamp(0.0, 1.0) * len as f32) as i32;
-            ((c - l / 2).clamp(0, (len - l).max(0)), l)
+            let _ = frac;
+            (0, len)
         };
         match edge {
             Edge::Left => {
@@ -146,23 +145,8 @@ impl Strip {
         }
     }
 
-    fn draw(&self) {
-        let Some((name, _, edge, _)) = &self.target else { return };
-        unsafe {
-            let gc = (self.x.XDefaultGC)(self.dpy, (self.x.XDefaultScreen)(self.dpy));
-            (self.x.XSetWindowBackground)(self.dpy, self.win, if self.hovering { BLUE_HOT } else { BLUE });
-            (self.x.XClearWindow)(self.dpy, self.win);
-            (self.x.XSetForeground)(self.dpy, gc, 0xffffff);
-            let vertical = matches!(edge, Edge::Left | Edge::Right);
-            let lines = if vertical { vec!["Drop", "to send", "to", name.as_str()] } else { vec!["Drop to send to", name.as_str()] };
-            for (i, l) in lines.iter().enumerate() {
-                let s: String = l.chars().take(if vertical { 12 } else { 40 }).collect();
-                let c = CString::new(s.clone()).unwrap_or_default();
-                (self.x.XDrawString)(self.dpy, self.win, gc, 8, 22 + i as c_int * 16, c.as_ptr(), s.len() as c_int);
-            }
-            (self.x.XFlush)(self.dpy);
-        }
-    }
+    /// Invisible: nothing is drawn (kept so the event handling stays the same).
+    fn draw(&self) {}
 
     fn show(&mut self, edge: Edge, frac: f32, name: String, idx: usize) {
         let (x, y, w, h) = self.geometry(edge, frac);
@@ -266,8 +250,17 @@ fn run(x: X, dpy: *mut Display, rx: Receiver<Cmd>, ident: Arc<Identity>) {
         let mut attr: XSetWindowAttributes = std::mem::zeroed();
         attr.override_redirect = 1; // stays where we put it, above other windows, no title bar
         attr.event_mask = ExposureMask;
-        attr.background_pixel = BLUE;
-        let w = (x.XCreateWindow)(dpy, root, 0, 0, THICK as c_uint, 200, 0, 0, 1 /* InputOutput */, std::ptr::null_mut(), CWOverrideRedirect | CWEventMask | CWBackPixel, &mut attr);
+        attr.background_pixel = 0;
+        attr.border_pixel = 0;
+        // fully see-through (32-bit visual, all pixels transparent) so it is never visible
+        let mut vi: x11::XVisualInfo = std::mem::zeroed();
+        let w = if (x.XMatchVisualInfo)(dpy, (x.XDefaultScreen)(dpy), 32, x11::TrueColor, &mut vi) != 0 {
+            attr.colormap = (x.XCreateColormap)(dpy, root, vi.visual, 0);
+            (x.XCreateWindow)(dpy, root, 0, 0, THICK as c_uint, 200, 0, 32, 1, vi.visual, CWOverrideRedirect | CWEventMask | CWBackPixel | x11::CWBorderPixel | x11::CWColormap, &mut attr)
+        } else {
+            // no compositor: a 1-pixel line is the least visible it can be
+            (x.XCreateWindow)(dpy, root, 0, 0, 1, 200, 0, 0, 1 /* InputOutput */, std::ptr::null_mut(), CWOverrideRedirect | CWEventMask | CWBackPixel, &mut attr)
+        };
         let version: [u32; 1] = [5];
         (x.XChangeProperty)(dpy, w, atoms.aware, XA_ATOM, 32, PropModeReplace, version.as_ptr() as *const u8, 1);
         let title = b"SmoothKvm drop";
@@ -277,7 +270,7 @@ fn run(x: X, dpy: *mut Display, rx: Receiver<Cmd>, ident: Arc<Identity>) {
         w
     };
     let mut s = Strip { x, dpy, win, atoms, shown: false, target: None, hovering: false, hover_since: None, carry: 0, source: 0, hide_at: None };
-    shared::info("Drag-and-drop to other computers is ready: drag files against the screen edge where another computer is");
+    shared::info("Drag-and-drop to other computers is ready: drag files across the screen edge where another computer is");
     let fd = unsafe { (s.x.XConnectionNumber)(dpy) };
     loop {
         // commands from the edge/mouse logic

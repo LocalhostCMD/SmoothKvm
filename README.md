@@ -37,21 +37,18 @@ search while it is showing a code.
   `F2` = emergency stop, `F3` = resume. Left/Right, Home/End, Ctrl+Left/Right and Delete edit the line; Up/Down
   recall earlier commands.
 - **Emergency stop**: red button, tray menu, `stop`, F2, or press **Scroll Lock three times**.
-- **Drag files to the other computer**: drag a file toward the side of the screen where the other computer is. A
-  "Drop to send to …" strip appears at that edge; drop the file on it and it is copied over (on Ubuntu the mouse then
-  carries on onto the other computer). While Ubuntu controls the laptop, the laptop's strip appears on the side facing
-  Ubuntu, so you drag files back the same way. You can also drop files on the SmoothKvm window, or use
-  `SmoothKvm send <files or folders> [--to <name>]`. Files land in `Downloads/SmoothKvm` on the other computer (choose
-  another folder under **Send files** → *Save files I receive in this folder*, or `files folder <path>`), never
-  overwrite anything and are never opened.
-- **Drag files straight into a folder on the other computer** (Ubuntu → Windows): drag files in Dolphin against
-  the edge where the laptop is and hold them there a moment. The pointer carries on onto the laptop with the files
-  "in hand"; let go over any Explorer window, the desktop or an app, and they are copied there. If you let go before
-  the copy has finished, the drop waits for it; if you let go somewhere that doesn't take files, they are kept in
-  the received-files folder.
+- **Drag files to the other computer**: just drag them across the screen edge where the other computer is, like
+  onto a second monitor. Nothing pops up. From Ubuntu (Dolphin) to Windows, the pointer carries on with the files
+  "in hand": let go over any Explorer window, the desktop or an app and they are copied right there (if you let go
+  before the copy finishes, the drop waits for it; somewhere that doesn't take files, they go to the received-files
+  folder). In the other direction, let go against the edge and they are copied to the other computer's received-files
+  folder. You can also drop files on the SmoothKvm window, or use `SmoothKvm send <files or folders> [--to <name>]`.
+  Received files land in `Downloads/SmoothKvm` unless you choose another folder (**Send files** -> *Save files I
+  receive in this folder*, or `files folder <path>`); they never overwrite anything and are never opened.
 - **Move a screen** to another side after pairing: drag it in the Screens map (terminal: `move <name> <side>`).
 - **Show an app on the other computer** (Windows → Linux, e.g. Fusion 360 from the laptop on the Ubuntu screen):
-  drag the app's window by its title bar onto the strip at the screen edge, or pick it under **Show an app on another
+  drag the app's window by its title bar against the screen edge where the other computer is and hold it there a
+  moment (it goes across; the original stays where it was on Windows), or pick it under **Show an app on another
   computer** in the window (terminal: `window`). The app keeps running on Windows; its window appears on Ubuntu as a
   normal window you can move and resize, and your clicks, scrolling and typing there go to the real app. Resizing it
   resizes the real window; closing it stops showing it (the app stays open). Only the parts of the picture that change
@@ -107,11 +104,12 @@ The Ubuntu machine can control your other computers too (the app is the same on 
 edge to return. This works on KDE Plasma: Wayland does not let normal apps see the pointer, so SmoothKvm loads a
 tiny KWin script that only reports when the pointer touches a screen edge. **Scroll Lock** also switches (next
 screen, again to cycle, finally back), on any desktop. Three quick presses = emergency stop. While another screen is
-active, this computer's keyboard and mouse are handed to it and a notification tells you who has control. Dragging a
-file against that edge shows the drop strip instead (an X11 window, so it needs XWayland, which Plasma includes).
+active, this computer's keyboard and mouse are handed to it and a notification tells you who has control. Dragging
+files across that edge carries them over (this uses XWayland, which Plasma includes).
 Dragging app windows across is not supported yet.
 
-## Clipboard sharing
-`/clipboard on` (or the checkbox in the app) on both computers. Plain text only, up to 32 KB, only what you copy
-after connecting, nothing from password managers on Windows, never written to the log. On Linux it needs
-`wl-clipboard` or `xclip` (the package recommends them).
+## Copy and paste
+On by default: copy text on one computer and paste it on the other, like on one computer. Plain text only, up to
+32 KB, only what you copy after connecting, nothing from password managers on Windows, never written to the log.
+Turn it off with the checkbox in the window or `/clipboard off`. On Linux it uses `wl-clipboard` (installed with the
+package; on an X11-only desktop, `xclip`).

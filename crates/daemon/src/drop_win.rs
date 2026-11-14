@@ -1,8 +1,9 @@
-//! The drop strip (Windows): while you drag something, a strip slides in on the screen edge that faces
-//! your other computer(s). Drop files on it and they are sent there.
+//! Carrying drags across the screen edge (Windows). While you drag something, an invisible catcher lies along
+//! the screen edge that faces your other computer(s). Let go of files against that edge and they are sent there;
+//! push an app window against it and, after a moment, that window appears on the other computer.
 //!
-//! It is a topmost, never-activating window that only exists on screen during a drag and only when there
-//! is somewhere to send to. Files arrive through WM_DROPFILES (Explorer's classic file drop), so no COM
+//! It is a topmost, never-activating, (almost) fully transparent window that only exists during a drag and
+//! only when there is somewhere to send to. Files arrive through WM_DROPFILES (Explorer's classic file drop), so no COM
 //! drop target is needed. Later phases also accept *windows* dropped on it (see `window_dropped`).
 use crate::store::{self, Identity};
 use crate::{shared, xfer};
@@ -18,8 +19,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-/// Thickness of the strip, in pixels.
-const THICK: i32 = 84;
+/// Thickness of the catcher, in pixels (the pointer sits on the last pixels while you push against the edge).
+const THICK: i32 = 6;
 /// A press must last this long and move this far before it counts as a drag (so clicks never flash it).
 const DRAG_DELAY: Duration = Duration::from_millis(250);
 const DRAG_DIST: i32 = 24;
@@ -73,7 +74,8 @@ unsafe fn run() {
     for m in [WM_DROPFILES, WM_COPYDATA, 0x0049 /* WM_COPYGLOBALDATA */] {
         let _ = ChangeWindowMessageFilterEx(hwnd, m, MSGFLT_ALLOW, None);
     }
-    let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 215, LWA_ALPHA);
+    // alpha 1 of 255: invisible, but still there for the mouse and for file drops (alpha 0 would let them through)
+    let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 1, LWA_ALPHA);
     SetTimer(hwnd, 1, 40, None);
     let mut msg = MSG::default();
     while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -92,6 +94,10 @@ struct Watch {
     edge: Edge,
     /// A window being dragged by its title bar (and where it was when the drag started).
     moving: Option<(isize, RECT)>,
+    /// Since when that window has been pushed against the edge.
+    pushing: Option<Instant>,
+    /// A window already sent across: put it back where it was once you let go of it.
+    restore: Option<(isize, RECT)>,
 }
 
 /// The window Windows is moving right now (title-bar drag), if any.
@@ -108,7 +114,7 @@ unsafe fn tick(hwnd: HWND) {
         Ok(g) => g,
         Err(_) => return,
     };
-    let w = g.get_or_insert_with(|| Watch { press: None, dragging: false, released_at: None, targets: vec![], targets_at: None, edge: Edge::Right, moving: None });
+    let w = g.get_or_insert_with(|| Watch { press: None, dragging: false, released_at: None, targets: vec![], targets_at: None, edge: Edge::Right, moving: None, pushing: None, restore: None });
     let down = GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000 != 0;
     let mut p = POINT::default();
     let _ = GetCursorPos(&mut p);
@@ -145,8 +151,35 @@ unsafe fn tick(hwnd: HWND) {
             }
             _ => {}
         }
+        // a window pushed against the edge for a moment goes across without having to let go
+        if w.dragging && w.restore.is_none() {
+            if let (Some((mw, start)), Some(i)) = (w.moving, segment_at(hwnd, p)) {
+                let wait = Duration::from_millis(store::load_config().switch_delay_ms.max(150) as u64);
+                if w.pushing.get_or_insert_with(Instant::now).elapsed() >= wait {
+                    let target = STRIP.lock().ok().and_then(|s| s.segments.get(i).map(|(t, _)| t.name.clone()));
+                    w.moving = None;
+                    w.pushing = None;
+                    w.restore = Some((mw, start));
+                    w.dragging = false;
+                    hide(hwnd);
+                    if let Some(ident) = IDENT.get().cloned() {
+                        match crate::stream_win::start(mw as i64, target, ident) {
+                            Ok(to) => shared::info(&format!("Showing that window on {to}")),
+                            Err(e) => shared::warn(&format!("Could not show that window: {e}")),
+                        }
+                    }
+                }
+            } else {
+                w.pushing = None;
+            }
+        }
     } else {
         w.press = None;
+        w.pushing = None;
+        // the window that went across is put back where it was on this screen
+        if let Some((mw, start)) = w.restore.take() {
+            let _ = SetWindowPos(HWND(mw as *mut _), None, start.left, start.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         // a window was let go over the strip: show it on that computer, and put it back where it was
         if let Some((mw, start)) = w.moving.take() {
             if w.dragging {
@@ -189,12 +222,12 @@ unsafe fn show(hwnd: HWND, targets: &[xfer::Target], edge: Edge) {
     let t = GetSystemMetrics(SM_YVIRTUALSCREEN);
     let (vw, vh) = (GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
     let vertical = matches!(edge, Edge::Left | Edge::Right);
-    let len = ((if vertical { vh } else { vw }) as f32 * 0.6) as i32;
+    // the whole edge
     let (x, y, w, h) = match edge {
-        Edge::Right => (l + vw - THICK, t + (vh - len) / 2, THICK, len),
-        Edge::Left => (l, t + (vh - len) / 2, THICK, len),
-        Edge::Top => (l + (vw - len) / 2, t, len, THICK),
-        Edge::Bottom => (l + (vw - len) / 2, t + vh - THICK, len, THICK),
+        Edge::Right => (l + vw - THICK, t, THICK, vh),
+        Edge::Left => (l, t, THICK, vh),
+        Edge::Top => (l, t, vw, THICK),
+        Edge::Bottom => (l, t + vh - THICK, vw, THICK),
     };
     let n = targets.len() as i32;
     let segments = targets
@@ -247,70 +280,10 @@ unsafe fn hover(hwnd: HWND, p: POINT) {
     }
 }
 
+/// Invisible: just validate the area.
 unsafe fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
-    let hdc = BeginPaint(hwnd, &mut ps);
-    let (segments, hover) = match STRIP.lock() {
-        Ok(s) => (s.segments.clone(), s.hover),
-        Err(_) => (vec![], None),
-    };
-    let (edge, moving_window) = WATCH.lock().ok().and_then(|g| g.as_ref().map(|w| (w.edge, w.moving.is_some()))).unwrap_or((Edge::Right, false));
-    let vertical = matches!(edge, Edge::Left | Edge::Right);
-    let font = CreateFontW(
-        if vertical { 20 } else { 22 },
-        0,
-        if vertical { if edge == Edge::Right { 900 } else { 2700 } } else { 0 },
-        0,
-        FW_SEMIBOLD.0 as i32,
-        0,
-        0,
-        0,
-        DEFAULT_CHARSET.0 as u32,
-        OUT_DEFAULT_PRECIS.0 as u32,
-        CLIP_DEFAULT_PRECIS.0 as u32,
-        CLEARTYPE_QUALITY.0 as u32,
-        0,
-        w!("Segoe UI"),
-    );
-    let old = SelectObject(hdc, font);
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, COLORREF(0x00FFFFFF));
-    for (i, (t, r)) in segments.iter().enumerate() {
-        let on = hover == Some(i);
-        // BGR: accent blue normally, bright cyan under the cursor
-        let brush = CreateSolidBrush(COLORREF(if on { 0x00FFC800 } else { 0x00F06D3B }));
-        FillRect(hdc, r, brush);
-        let _ = DeleteObject(brush);
-        // a thin divider between segments
-        if i > 0 {
-            let line = CreateSolidBrush(COLORREF(0x00FFFFFF));
-            let d = if vertical { RECT { left: r.left, top: r.top, right: r.right, bottom: r.top + 2 } } else { RECT { left: r.left, top: r.top, right: r.left + 2, bottom: r.bottom } };
-            FillRect(hdc, &d, line);
-            let _ = DeleteObject(line);
-        }
-        let arrow = match edge {
-            Edge::Right => "→",
-            Edge::Left => "←",
-            Edge::Top => "↑",
-            Edge::Bottom => "↓",
-        };
-        let what = if moving_window { "Drop to show this window on" } else { "Drop to send to" };
-        let label: Vec<u16> = format!("{arrow}  {what} {}", shared::clean(&t.name)).encode_utf16().collect();
-        if vertical {
-            // rotated text is drawn from a start point, centred by measuring it first
-            let mut sz = windows::Win32::Foundation::SIZE::default();
-            let _ = GetTextExtentPoint32W(hdc, &label, &mut sz);
-            let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
-            let (x, y) = if edge == Edge::Right { (cx - sz.cy / 2, cy + sz.cx / 2) } else { (cx + sz.cy / 2, cy - sz.cx / 2) };
-            let _ = TextOutW(hdc, x, y, &label);
-        } else {
-            let mut rr = *r;
-            let mut label = label;
-            DrawTextW(hdc, &mut label, &mut rr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        }
-    }
-    SelectObject(hdc, old);
-    let _ = DeleteObject(font);
+    let _ = BeginPaint(hwnd, &mut ps);
     let _ = EndPaint(hwnd, &ps);
 }
 

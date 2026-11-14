@@ -169,7 +169,9 @@ fn config_path() -> PathBuf {
 }
 
 pub fn load_config() -> Config {
-    fs::read_to_string(config_path()).ok().and_then(|t| toml::from_str(&t).ok()).unwrap_or_default()
+    let mut c: Config = fs::read_to_string(config_path()).ok().and_then(|t| toml::from_str(&t).ok()).unwrap_or_default();
+    c.upgrade();
+    c
 }
 
 #[allow(dead_code)]

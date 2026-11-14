@@ -94,8 +94,12 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
             json_reply(req, 200, v);
         }
         ("/api/config", Method::Post) => match serde_json::from_value::<Config>(data) {
-            Ok(cfg) => match cfg.validate() {
-                Ok(()) => match store::save_config(&cfg) {
+            Ok(mut cfg) => match cfg.validate() {
+                Ok(()) => match {
+                    // what you just chose in the window is the current setting: never "upgrade" it later
+                    cfg.settings_rev = kvm_protocol::SETTINGS_REV;
+                    store::save_config(&cfg)
+                } {
                     Ok(()) => {
                         shared::info("Settings changed");
                         json_reply(req, 200, json!({"ok": true}))

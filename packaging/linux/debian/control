@@ -4,11 +4,11 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: SmoothKvm <noreply@example.com>
-Depends: libc6
-Recommends: xvfb, x11vnc, xfce4, wl-clipboard, xclip, libnotify-bin
+Depends: libc6, wl-clipboard
+Recommends: xvfb, x11vnc, xfce4, xclip, libnotify-bin
 Description: One keyboard and mouse across all your computers
  SmoothKvm lets a Windows PC's keyboard and mouse control this machine over an
  encrypted, paired connection. Installs a background service that starts on boot,
  plus the SmoothKvm terminal UI (type SmoothKvm). This computer can also control
- other paired screens: press Scroll Lock to jump to the next one. Clipboard text can
- be shared (off by default).
+ other paired screens: press Scroll Lock to jump to the next one. Copied text is
+ shared between the computers.
