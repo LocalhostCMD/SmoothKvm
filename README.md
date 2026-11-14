@@ -68,8 +68,11 @@ how a paired computer is found again after its address changes).
   normal window you can move and resize, and your clicks, scrolling and typing there go to the real app. Resizing it
   resizes the real window; closing it stops showing it (the app stays open). Only the parts of the picture that change
   are sent (compressed, about 30 frames a second), so it is quick on a wired network; very fast motion over Wi-Fi will
-  be choppier. While you use it, the Windows mouse pointer moves along on the laptop. Linux apps on the Windows
-  screen are not supported yet.
+  be choppier. While you use it, the Windows mouse pointer moves along on the laptop.
+- **Show an Ubuntu app on Windows** (KDE Plasma): open SmoothKvm on Ubuntu → **App windows** and pick the app.
+  Its window appears on Windows as a normal window you can move, resize and use; the app keeps running on
+  Ubuntu, and Ubuntu's pointer moves along while you use it. KWin takes the pictures; it only allows that for
+  the installed SmoothKvm package, and you may need to log out and in once after installing.
 - **Effects** (Windows; colourful, drawn on screen, never move your mouse): Ripple, Glow, Sparks, Comet x Rainbow,
   Ocean, Sunset, Neon, Mono, with motion curves (bounce, elastic, spring, overshoot or your own).
 - **Game mode**: no screen switching while a full-screen app or game runs.
@@ -123,7 +126,7 @@ tiny KWin script that only reports when the pointer touches a screen edge. **Scr
 screen, again to cycle, finally back), on any desktop. Three quick presses = emergency stop. While another screen is
 active, this computer's keyboard and mouse are handed to it and a notification tells you who has control. Dragging
 files across that edge carries them over (this uses XWayland, which Plasma includes).
-Dragging app windows across is not supported yet.
+Dragging app windows across the edge is not supported yet; pick them under **App windows** instead.
 
 ## Copy and paste
 On by default: copy text on one computer and paste it on the other, like on one computer. Plain text only, up to

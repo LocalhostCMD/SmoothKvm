@@ -111,6 +111,12 @@ fn run_once(announced: &mut bool) -> io::Result<()> {
         if m.kind != METHOD_CALL {
             continue;
         }
+        // the answer of a one-shot window script (see stream_linux)
+        if m.interface == IFACE && m.member == "Windows" {
+            if let Some(a) = m.args.first() {
+                crate::stream_linux::script_reply(a.clone());
+            }
+        }
         if m.interface == IFACE && m.member == "Edge" {
             match m.args.first().map(|a| parse(a)) {
                 Some(Ok(Some((edge, frac, px)))) => crate::capture_linux::edge_hit(edge, frac, px),

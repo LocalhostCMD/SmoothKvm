@@ -185,6 +185,80 @@ pub(crate) fn hid_to_linux(code: u16) -> Option<u16> {
     })
 }
 
+const EV_ABS: u16 = 0x03;
+const UI_SET_ABSBIT: libc::c_ulong = 0x4004_5567;
+const UI_ABS_SETUP: libc::c_ulong = 0x401C_5504;
+const ABS_MAX: i32 = 65535;
+
+#[repr(C)]
+struct AbsSetup {
+    code: u16,
+    _pad: u16,
+    value: i32,
+    minimum: i32,
+    maximum: i32,
+    fuzz: i32,
+    flat: i32,
+    resolution: i32,
+}
+
+/// A second virtual device that can put the pointer at an exact place on the desktop (like a tablet): used
+/// to work an app's real window from another computer.
+fn abs_device() -> io::Result<Uinput> {
+    let file = OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open("/dev/uinput")?;
+    let fd = file.as_raw_fd();
+    for ev in [EV_KEY, EV_ABS, EV_SYN] {
+        ioctl(fd, UI_SET_EVBIT, ev as _)?;
+    }
+    // (buttons it never presses: they make the desktop treat it as a pointer)
+    for btn in BTN_LEFT..=BTN_LEFT + 2 {
+        ioctl(fd, UI_SET_KEYBIT, btn as _)?;
+    }
+    for axis in [0u16, 1] {
+        ioctl(fd, UI_SET_ABSBIT, axis as _)?;
+    }
+    let mut name = [0u8; 80];
+    let label = b"SmoothKvm virtual pointer";
+    name[..label.len()].copy_from_slice(label);
+    let setup = UinputSetup { bustype: 0x06, vendor: 0x1234, product: 0x5679, version: 1, name, ff_effects_max: 0 };
+    ioctl(fd, UI_DEV_SETUP, &setup as *const _ as libc::c_ulong)?;
+    for axis in [0u16, 1] {
+        let a = AbsSetup { code: axis, _pad: 0, value: 0, minimum: 0, maximum: ABS_MAX, fuzz: 0, flat: 0, resolution: 0 };
+        ioctl(fd, UI_ABS_SETUP, &a as *const _ as libc::c_ulong)?;
+    }
+    ioctl(fd, UI_DEV_CREATE, 0)?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    Ok(Uinput { file })
+}
+
+static ABS_DEVICE: OnceLock<Mutex<Uinput>> = OnceLock::new();
+
+/// Where (x, y) on a desktop of `w` x `h` pixels is on the device's 0..65535 axes.
+fn abs_units(x: i32, y: i32, w: u32, h: u32) -> (i32, i32) {
+    let f = |v: i32, n: u32| ((v.clamp(0, n.max(1) as i32 - 1) as i64 * ABS_MAX as i64) / (n.max(2) as i64 - 1)) as i32;
+    (f(x, w), f(y, h))
+}
+
+/// Put the pointer at (x, y) on this computer's desktop (`w` x `h` pixels in all).
+pub fn abs_move(x: i32, y: i32, w: u32, h: u32) {
+    if ABS_DEVICE.get().is_none() {
+        match abs_device() {
+            Ok(d) => {
+                let _ = ABS_DEVICE.set(Mutex::new(d));
+            }
+            Err(_) => return,
+        }
+    }
+    if let Some(dev) = ABS_DEVICE.get() {
+        if let Ok(mut d) = dev.lock() {
+            let (ax, ay) = abs_units(x, y, w, h);
+            d.emit(EV_ABS, 0, ax);
+            d.emit(EV_ABS, 1, ay);
+            d.sync();
+        }
+    }
+}
+
 static DEVICE: OnceLock<Mutex<Uinput>> = OnceLock::new();
 
 pub fn inject(ev: &InputEvent) {

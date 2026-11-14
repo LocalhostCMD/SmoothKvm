@@ -22,6 +22,8 @@ pub struct Msg {
     pub sender: String,
     pub destination: String,
     pub reply_serial: u32,
+    /// for errors: the error's name
+    pub error_name: String,
     pub signature: String,
     /// String arguments (only messages whose signature is all 's' are decoded).
     pub args: Vec<String>,
@@ -167,6 +169,7 @@ pub fn decode(raw: &[u8]) -> Option<Msg> {
                     1 => m.path = v,
                     2 => m.interface = v,
                     3 => m.member = v,
+                    4 => m.error_name = v,
                     6 => m.destination = v,
                     7 => m.sender = v,
                     _ => {}
@@ -198,6 +201,51 @@ pub fn decode(raw: &[u8]) -> Option<Msg> {
     Some(m)
 }
 
+/// The whole-number entries (u, i, b) of an a{sv} dictionary; everything else in it is skipped.
+pub fn dict_u32(body: &[u8]) -> std::collections::HashMap<String, u32> {
+    let mut out = std::collections::HashMap::new();
+    let mut r = Rd { b: body, pos: 0 };
+    let Some(len) = r.u32() else { return out };
+    r.align(8);
+    let end = (r.pos + len as usize).min(body.len());
+    while r.pos < end {
+        r.align(8);
+        if r.pos >= end {
+            break;
+        }
+        let (Some(key), Some(sig)) = (r.string(), r.sig()) else { break };
+        match sig.as_str() {
+            "u" | "i" | "b" => match r.u32() {
+                Some(v) => {
+                    out.insert(key, v);
+                }
+                None => break,
+            },
+            "s" | "o" => {
+                if r.string().is_none() {
+                    break;
+                }
+            }
+            "g" => {
+                if r.sig().is_none() {
+                    break;
+                }
+            }
+            "d" | "t" | "x" => {
+                r.align(8);
+                r.pos += 8;
+            }
+            "n" | "q" => {
+                r.align(2);
+                r.pos += 2;
+            }
+            "y" => r.pos += 1,
+            _ => break, // a container: nothing we need comes after one
+        }
+    }
+    out
+}
+
 fn session_bus_path() -> String {
     if let Ok(a) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
         if let Some(p) = a.split(',').next().and_then(|x| x.strip_prefix("unix:path=")) {
@@ -223,6 +271,10 @@ impl Bus {
         if !line.starts_with("OK") {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("D-Bus refused: {}", line.trim())));
         }
+        // ask to be allowed to send file descriptors (KWin writes window pictures into a pipe we hand it)
+        rd.get_mut().write_all(b"NEGOTIATE_UNIX_FD\r\n")?;
+        line.clear();
+        rd.read_line(&mut line)?;
         rd.get_mut().write_all(b"BEGIN\r\n")?;
         let mut bus = Bus { sock: rd, serial: 0 };
         bus.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "Hello", &[])?;
@@ -256,6 +308,49 @@ impl Bus {
                     return Err(io::Error::new(io::ErrorKind::Other, format!("{member}: {}", m.args.first().cloned().unwrap_or_default())));
                 }
                 return Ok(m);
+            }
+        }
+    }
+
+    /// Call a method whose body is already marshalled for `sig`, sending one file descriptor along with it
+    /// (the 'h' in the body refers to it as number 0). Returns the answer's body.
+    pub fn call_with_fd(&mut self, dest: &str, path: &str, iface: &str, member: &str, sig: &str, body: &[u8], fd: i32) -> io::Result<Vec<u8>> {
+        use std::os::fd::AsRawFd;
+        let serial = self.next_serial();
+        let fields = [Field::Obj(1, path), Field::Str(2, iface), Field::Str(3, member), Field::Str(6, dest), Field::Sig(8, sig), Field::U32(9, 1)];
+        let msg = encode(METHOD_CALL, 0, serial, &fields, sig, body);
+        let sock = self.sock.get_mut();
+        let sent = unsafe {
+            let mut iov = libc::iovec { iov_base: msg.as_ptr() as *mut libc::c_void, iov_len: msg.len() };
+            let space = libc::CMSG_SPACE(4) as usize;
+            let mut cbuf = vec![0u8; space];
+            let mut mh: libc::msghdr = std::mem::zeroed();
+            mh.msg_iov = &mut iov;
+            mh.msg_iovlen = 1;
+            mh.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
+            mh.msg_controllen = space as _;
+            let c = libc::CMSG_FIRSTHDR(&mh);
+            (*c).cmsg_level = libc::SOL_SOCKET;
+            (*c).cmsg_type = libc::SCM_RIGHTS;
+            (*c).cmsg_len = libc::CMSG_LEN(4) as _;
+            std::ptr::copy_nonoverlapping(&fd as *const i32 as *const u8, libc::CMSG_DATA(c), 4);
+            libc::sendmsg(sock.as_raw_fd(), &mh, libc::MSG_NOSIGNAL)
+        };
+        if sent < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if (sent as usize) < msg.len() {
+            sock.write_all(&msg[sent as usize..])?;
+        }
+        loop {
+            let raw = self.read_raw()?;
+            let Some(m) = decode(&raw) else { continue };
+            if (m.kind == METHOD_RETURN || m.kind == ERROR) && m.reply_serial == serial {
+                if m.kind == ERROR {
+                    return Err(io::Error::new(io::ErrorKind::Other, format!("{member}: {} {}", m.error_name, m.args.first().cloned().unwrap_or_default())));
+                }
+                let fields_len = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
+                return Ok(raw[((16 + fields_len + 7) / 8 * 8).min(raw.len())..].to_vec());
             }
         }
     }
@@ -346,6 +441,29 @@ impl Bus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_numbers_out_of_a_dictionary() {
+        // {"width": u 640, "windowId": s "abc", "scale": d 1.5, "height": u 480}
+        let mut b = vec![0u8; 4];
+        pad(&mut b, 8);
+        let start = b.len();
+        let mut entry = |k: &str, sig: &str, f: &dyn Fn(&mut Vec<u8>)| {
+            pad(&mut b, 8);
+            put_str(&mut b, k);
+            put_sig(&mut b, sig);
+            f(&mut b);
+        };
+        entry("width", "u", &|b| { pad(b, 4); b.extend_from_slice(&640u32.to_le_bytes()); });
+        entry("windowId", "s", &|b| put_str(b, "abc"));
+        entry("scale", "d", &|b| { pad(b, 8); b.extend_from_slice(&1.5f64.to_le_bytes()); });
+        entry("height", "u", &|b| { pad(b, 4); b.extend_from_slice(&480u32.to_le_bytes()); });
+        let len = (b.len() - start) as u32;
+        b[..4].copy_from_slice(&len.to_le_bytes());
+        let d = dict_u32(&b);
+        assert_eq!((d.get("width"), d.get("height"), d.len()), (Some(&640), Some(&480), 2));
+        assert!(dict_u32(&[1, 2]).is_empty(), "garbage is not a crash");
+    }
 
     #[test]
     fn encode_decode_roundtrip() {

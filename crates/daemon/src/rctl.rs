@@ -108,6 +108,7 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
                     "targets": crate::xfer::targets(),
                     "inbox": crate::xfer::inbox(),
                     "display": {"running": running, "detail": detail},
+                    "streams": streams_json(),
             });
             crate::api::extra_state(&mut v);
             json_reply(req, 200, v);
@@ -183,6 +184,25 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
                 Err(e) => json_reply(req, 400, json!({"error": e})),
             }
         }
+        // App windows of this computer, shown on another one
+        #[cfg(target_os = "linux")]
+        ("/api/windows", Method::Get) => json_reply(req, 200, json!({"windows": crate::stream_linux::list(), "streams": crate::stream_linux::streams(), "targets": crate::xfer::targets()})),
+        #[cfg(target_os = "linux")]
+        ("/api/stream", Method::Post) => {
+            let Some(window) = data.get("window").and_then(|v| v.as_str()) else {
+                return json_reply(req, 400, json!({"error": "which window?"}));
+            };
+            let to = data.get("to").and_then(|v| v.as_str()).map(String::from);
+            match crate::stream_linux::start(window, to, ident.clone()) {
+                Ok(name) => json_reply(req, 200, json!({"to": name})),
+                Err(e) => json_reply(req, 400, json!({"error": e.to_string()})),
+            }
+        }
+        #[cfg(target_os = "linux")]
+        ("/api/stream/stop", Method::Post) => {
+            crate::stream_linux::stop(data.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32);
+            json_reply(req, 200, json!({"ok": true}))
+        }
         // "Open settings" in the tray panel
         ("/api/show", Method::Post) => {
             #[cfg(target_os = "linux")]
@@ -210,5 +230,17 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
             }
         }
         _ => json_reply(req, 404, json!({"error": "not found"})),
+    }
+}
+
+/// App windows of this computer being shown on another one right now.
+fn streams_json() -> serde_json::Value {
+    #[cfg(target_os = "linux")]
+    {
+        json!(crate::stream_linux::streams())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        json!([])
     }
 }

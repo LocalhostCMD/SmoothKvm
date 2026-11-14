@@ -145,7 +145,7 @@ body.view-tray{background:var(--card);border:1px solid var(--line);overflow:hidd
     <button data-p="screens"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="13" height="10" rx="2"/><rect x="15" y="8" width="7" height="9" rx="1.5"/><path d="M6 18h6"/></svg><span>Screens</span></button>
     <button data-p="devices"><svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.800-1-8-4.500-8-9V6z"/></svg><span>Devices</span></button>
     <button data-p="files"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span>Files</span></button>
-    <button data-p="apps" class="win-only"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/></svg><span>App windows</span></button>
+    <button data-p="apps"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18"/></svg><span>App windows</span></button>
     <button data-p="controls"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg><span>Controls</span></button>
     <button data-p="effects"><svg viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.600 5.600l2 2M16.400 16.400l2 2M18.400 5.600l-2 2M7.600 16.400l-2 2"/></svg><span>Effects</span></button>
     <button data-p="activity"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg><span>Activity</span><span class="n" id="navalerts" hidden></span></button>
@@ -198,13 +198,13 @@ body.view-tray{background:var(--card);border:1px solid var(--line);overflow:hidd
     </div>
   </section>
 
-  <section class="page win-only" data-p="apps">
-    <div class="head"><div><h1>App windows</h1><p class="lead">Show an app from this PC on another computer. Or drag its window against the screen edge and hold.</p></div><button class="b ghost" id="winrefresh">Refresh</button></div>
+  <section class="page" data-p="apps">
+    <div class="head"><div><h1>App windows</h1><p class="lead">Show an app from this computer on another one.<span class="win-only"> Or drag its window against the screen edge and hold.</span></p></div><button class="b ghost" id="winrefresh">Refresh</button></div>
     <div class="card">
       <div id="streams" class="list"></div>
       <select id="wintarget" style="width:auto;margin-top:6px"></select>
       <div id="winlist" class="found"><div class="hint">Loading windows…</div></div>
-      <div class="hint">The app keeps running here. Closing its window over there only stops showing it.</div>
+      <div class="hint">The app keeps running here. Closing its window over there only stops showing it.<span class="linux-only"> Needs KDE Plasma. While you use it from the other computer, this computer's pointer moves along.</span></div>
     </div>
   </section>
 
@@ -730,7 +730,6 @@ $('uninstall').onclick=async()=>{
 
 // ---- app windows shown on another computer (Windows)
 async function loadWindows(){
-  if(os!=='windows') return;
   try{
     const r=await api('/api/windows');
     const selc=$('wintarget'), keep=selc.value; selc.textContent='';

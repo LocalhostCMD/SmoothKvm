@@ -81,6 +81,8 @@ mod edge_linux;
 #[cfg(target_os = "linux")]
 mod tray_linux;
 #[cfg(target_os = "linux")]
+mod stream_linux;
+#[cfg(target_os = "linux")]
 mod drop_x11;
 #[cfg(target_os = "linux")]
 mod drag_x11;
