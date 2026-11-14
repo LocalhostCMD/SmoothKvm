@@ -396,7 +396,7 @@ fn exec(c: &Client, mode: &str, line: &str) -> Result<Out, String> {
         }
         #[cfg(unix)]
         ("/app", _) => {
-            crate::linux_app::open_window().map_err(|e| e.to_string())?;
+            crate::linux_app::open_window(false).map_err(|e| e.to_string())?;
             Ok(vec![(Kind::Good, "Opening the SmoothKvm window...".into())])
         }
         ("/display", true) => {

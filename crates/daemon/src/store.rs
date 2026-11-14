@@ -180,7 +180,23 @@ pub fn config_mtime() -> Option<std::time::SystemTime> {
 }
 
 #[allow(dead_code)]
+/// Note when a screen's placement changed (unless the caller already did: a placement taken over from the
+/// other computer keeps that computer's time).
+fn stamp_layout(cfg: &Config) -> Config {
+    let old = load_config();
+    let mut new = cfg.clone();
+    for r in new.remotes.iter_mut() {
+        if let Some(o) = old.remotes.iter().find(|o| o.name == r.name) {
+            if (o.edge, o.offset) != (r.edge, r.offset) && o.layout_at == r.layout_at {
+                r.layout_at = crate::shared::now_ms();
+            }
+        }
+    }
+    new
+}
+
 pub fn save_config(cfg: &Config) -> io::Result<()> {
+    let cfg = &stamp_layout(cfg);
     let text = toml::to_string_pretty(cfg).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     fs::create_dir_all(config_dir())?;
     fs::write(config_path(), text)

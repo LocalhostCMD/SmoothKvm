@@ -212,6 +212,7 @@ body.view-tray{background:var(--card);border:1px solid var(--line);overflow:hidd
     <div class="head"><div><h1>Controls</h1><p class="lead">How switching between screens behaves.</p></div></div>
     <div class="card">
       <label class="sw"><input id="clip" type="checkbox"><span>Shared clipboard<small>Copy on one computer, paste on the other. Plain text up to 32 KB; never logged; password-manager copies are skipped.</small></span></label>
+      <label class="sw"><input id="mirror" type="checkbox"><span>Either computer can control the other<small>A computer that controls this one is added here as a screen too, on the opposite side, and both maps stay in step. The placement changed last wins.</small></span></label>
       <label class="sw win-only"><input id="guard" type="checkbox"><span>Game mode<small>Never switch screens while a full-screen app or game is running.</small></span></label>
       <label class="sw win-only"><input id="autostart" type="checkbox"><span>Start with Windows<small>Opens when you sign in, with its icon in the tray.</small></span></label>
       <label class="sw win-only"><input id="closequits" type="checkbox"><span>Closing the window quits SmoothKvm<small>Off: it keeps working, with its icon in the tray. Quit from the tray menu.</small></span></label>
@@ -322,6 +323,7 @@ body.view-tray{background:var(--card);border:1px solid var(--line);overflow:hidd
     <div class="sidepick" id="w-sides"></div>
     <div style="margin-top:8px">Type the code shown on it:</div>
     <input id="w-code" class="codein" maxlength="9" inputmode="numeric" autocomplete="off" placeholder="0000 0000">
+    <label class="sw win-only" style="max-width:330px;margin:4px auto 0"><input id="w-both" type="checkbox" checked><span>Let it control this computer too<small>Turns on "Let paired computers control this PC".</small></span></label>
     <div class="btns center"><button class="b" id="w-pair">Pair</button></div>
     <div id="w-status" class="hint center"></div>
   </div>
@@ -544,6 +546,7 @@ function bindSimple(){
   $('guard').onchange=e=>{ cfg.game_guard=e.target.checked; touch(); };
   $('recv').onchange=e=>{ cfg.receive=e.target.checked; touch(); };
   $('closequits').onchange=e=>{ cfg.close_quits=e.target.checked; touch(); };
+  $('mirror').onchange=e=>{ cfg.mirror_layout=e.target.checked; touch(); };
   const both=(a,b,set)=>{ [a,b].forEach(id=>$(id).onchange=e=>{ set(e.target.checked); $(a).checked=$(b).checked=e.target.checked; touch(); }); };
   both('clip','t-clip',v=>cfg.clipboard=v); both('filedrop','t-files',v=>cfg.file_drop=v);
   $('updauto').onchange=e=>{ cfg.update_check=e.target.checked; touch(); };
@@ -568,7 +571,7 @@ function fillSimple(){
   const a=cfg.animation;
   $('astyle').value=a.style; $('adur').value=a.duration_ms; $('asize').value=a.size_px; $('avisual').value=a.visual; $('apal').value=a.palette;
   $('aenter').checked=a.on_enter; $('aleave').checked=a.on_leave; $('guard').checked=cfg.game_guard; $('esc').value=String(cfg.escape_hid);
-  $('recv').checked=!!cfg.receive; $('closequits').checked=!!cfg.close_quits;
+  $('recv').checked=!!cfg.receive; $('closequits').checked=!!cfg.close_quits; $('mirror').checked=cfg.mirror_layout!==false;
   $('clip').checked=$('t-clip').checked=!!cfg.clipboard;
   $('filedrop').checked=$('t-files').checked=cfg.file_drop!==false;
   $('updauto').checked=cfg.update_check!==false;
@@ -641,6 +644,8 @@ $('w-pair').onclick=async()=>{
   if(pin.length!==8){ $('w-status').className='errmsg center'; $('w-status').textContent='The code has 8 digits.'; return; }
   $('w-pair').disabled=true; $('w-status').className='hint center'; $('w-status').textContent='Pairing…';
   try{
+    // either-way control: this PC has to listen for the other one to reach it
+    if(os==='windows' && $('w-both').checked && !cfg.receive){ cfg.receive=true; $('recv').checked=true; touch(); }
     await flushSave();
     const r=await api('/api/pair/add',{name:wiz.target.name, addr:wiz.target.addr, pin, edge:wiz.edge});
     wiz.paired=r.name; wiz.pairedAt=Date.now();

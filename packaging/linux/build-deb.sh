@@ -18,6 +18,7 @@ install -m644 packaging/linux/smoothkvm-terminal.desktop "$PKG/usr/share/applica
 install -m644 packaging/linux/99-smoothkvm-uinput.rules "$PKG/lib/udev/rules.d/99-smoothkvm-uinput.rules"
 install -m644 packaging/linux/smoothkvm.desktop "$PKG/usr/share/applications/smoothkvm.desktop"
 install -m644 packaging/linux/smoothkvm.svg "$PKG/usr/share/pixmaps/smoothkvm.svg"
+install -Dm644 packaging/linux/smoothkvm.svg "$PKG/usr/share/icons/hicolor/scalable/apps/smoothkvm.svg"
 echo uinput > "$PKG/etc/modules-load.d/smoothkvm.conf"
 sed "s/@VERSION@/$VERSION/" packaging/linux/debian/control > "$PKG/DEBIAN/control"
 for s in postinst prerm postrm; do install -m755 "packaging/linux/debian/$s" "$PKG/DEBIAN/$s"; done

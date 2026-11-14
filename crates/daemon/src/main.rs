@@ -77,6 +77,8 @@ mod dbus_min;
 #[cfg(target_os = "linux")]
 mod edge_linux;
 #[cfg(target_os = "linux")]
+mod tray_linux;
+#[cfg(target_os = "linux")]
 mod drop_x11;
 #[cfg(target_os = "linux")]
 mod drag_x11;
@@ -214,12 +216,12 @@ fn handle_session(stream: TcpStream, ident: &Identity) -> io::Result<()> {
     }
     drop(slot);
     let id = shared::session_start(&peer, ip);
-    let result = session_loop(conn, &peer, &who, id);
+    let result = session_loop(conn, &peer, &who, id, &secure::to_hex(&est.remote_key), &secure::to_hex(&ident.public), ip);
     shared::session_end(id);
     result
 }
 
-fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) -> io::Result<()> {
+fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64, key: &str, my_key: &str, ip: std::net::IpAddr) -> io::Result<()> {
     println!("secure session with {peer}");
     // The sender pings every second; silence for 10s means it's gone.
     conn.set_timeouts(Some(Duration::from_secs(10)), Some(Duration::from_secs(5)))?;
@@ -232,6 +234,8 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
             return Ok(());
         }
     };
+    // the port the controlling computer listens on itself (from its Announce), if it does
+    let mut back: Option<u16> = None;
     match first {
         Message::OpenDisplay => {
             // Paired peers may reach the local VNC server (127.0.0.1:5900 only, never anything else).
@@ -273,10 +277,14 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
         }
         Message::Announce { port, version } => {
             shared::session_control(id, Some(port));
+            back = Some(port);
             // newer controllers draw this screen on their map at its real size
             if version >= 10 {
                 let s = screens::layout();
                 conn.send(&Message::ScreenInfo { width: s.width, height: s.height, monitors: s.monitors })?;
+            }
+            if version >= 11 {
+                conn.send(&Message::Caps { version: kvm_protocol::PROTO_VERSION })?;
             }
         }
         other => {
@@ -294,6 +302,7 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
     let cs = Arc::new(std::sync::Mutex::new(clip::ClipSync::new()));
     let alive = Arc::new(AtomicBool::new(true));
     let (up_tx, up_rx) = std::sync::mpsc::channel::<Message>();
+    let pong_tx = up_tx.clone();
     if let Ok(mut u) = UPLINK.lock() {
         u.push((id, up_tx));
     }
@@ -329,8 +338,21 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64) ->
     let end = loop {
         match rd.recv() {
             Ok(m) => {
-                if let Message::Enter { edge, .. } = &m {
-                    shared::session_side(id, *edge);
+                match &m {
+                    // answer every ping, so the controller knows within seconds if this computer is gone
+                    Message::Ping => {
+                        let _ = pong_tx.send(Message::Pong);
+                        continue;
+                    }
+                    Message::Enter { edge, .. } => shared::session_side(id, *edge),
+                    // where this computer is on the controller's map: mirror it, so it works both ways
+                    Message::Neighbor { edge, offset, width, height, name, at } => {
+                        if let Some(port) = back {
+                            daemon::mirror_neighbor(key, my_key, ip, port, name, *edge, *offset, *width, *height, *at);
+                        }
+                        continue;
+                    }
+                    _ => {}
                 }
                 receiver_effect(&m);
                 // a file drag carried over from the other computer: pick it up here
@@ -724,5 +746,68 @@ pub fn ensure_input_group() {
         let args: Vec<String> = std::env::args().skip(1).map(|a| format!("'{}'", a.replace('\'', ""))).collect();
         let cmd = format!("'{}' {}", exe.display().to_string().replace('\'', ""), args.join(" "));
         let _ = std::process::Command::new("sg").args(["input", "-c", &cmd]).env("SMOOTHKVM_SG", "1").exec();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// One controlled-side session over a real encrypted loopback connection; returns the controller's end.
+    fn session() -> (secure::SecureConn, std::thread::JoinHandle<io::Result<()>>) {
+        let (a_priv, _) = secure::generate_keypair().unwrap();
+        let (b_priv, _) = secure::generate_keypair().unwrap();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let est = secure::accept(s, &b_priv, None).unwrap();
+            let ip = addr.ip();
+            let id = shared::session_start("test", ip);
+            let r = session_loop(est.conn, "test", "test", id, "aa", "bb", ip);
+            shared::session_end(id);
+            r
+        });
+        let c = secure::connect(TcpStream::connect(addr).unwrap(), &a_priv, None).unwrap().conn;
+        c.set_timeouts(Some(Duration::from_secs(5)), Some(Duration::from_secs(5))).unwrap();
+        (c, h)
+    }
+
+    fn next(c: &mut secure::SecureConn) -> Message {
+        loop {
+            match c.recv().unwrap() {
+                Message::Clipboard(_) => continue,
+                m => return m,
+            }
+        }
+    }
+
+    #[test]
+    fn a_controlled_computer_says_what_it_is_and_answers_pings() {
+        let (mut c, h) = session();
+        c.send(&Message::Announce { port: 1, version: kvm_protocol::PROTO_VERSION }).unwrap();
+        match next(&mut c) {
+            Message::ScreenInfo { width, height, monitors } => assert!(width >= 100 && height >= 100 && !monitors.is_empty()),
+            m => panic!("expected ScreenInfo, got {m:?}"),
+        }
+        assert!(matches!(next(&mut c), Message::Caps { version } if version == kvm_protocol::PROTO_VERSION));
+        for _ in 0..3 {
+            c.send(&Message::Ping).unwrap();
+            assert!(matches!(next(&mut c), Message::Pong));
+        }
+        drop(c);
+        let _ = h.join().unwrap();
+    }
+
+    #[test]
+    fn an_older_controller_is_sent_nothing_it_cannot_read() {
+        let (mut c, h) = session();
+        c.send(&Message::Announce { port: 1, version: 9 }).unwrap();
+        c.send(&Message::Ping).unwrap();
+        // the very first thing back is the pong (0.9 knows Pong; it would choke on ScreenInfo or Caps)
+        assert!(matches!(next(&mut c), Message::Pong));
+        drop(c);
+        let _ = h.join().unwrap();
     }
 }

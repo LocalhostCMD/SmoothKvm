@@ -63,6 +63,67 @@ pub fn start_backend() -> io::Result<()> {
     Ok(())
 }
 
+/// A computer that controls this one says where this one is on its map (`edge` of its desktop, `offset`
+/// along it). Put it on this computer's map on the opposite side, mirrored, so the pointer can go both ways
+/// and both maps agree. Only for paired computers (this is called from an authenticated session).
+#[allow(clippy::too_many_arguments)]
+pub fn mirror_neighbor(key: &str, my_key: &str, ip: std::net::IpAddr, port: u16, name: &str, edge: kvm_protocol::Edge, offset: Option<i32>, width: u32, height: u32, at: u64) {
+    let mut cfg = store::load_config();
+    if mirror_into(&mut cfg, key, my_key, ip, port, name, edge, offset, width, height, at) && cfg.validate().is_ok() {
+        let _ = store::save_config(&cfg);
+    }
+}
+
+/// The settings change for `mirror_neighbor`; true if anything changed. If both computers have placed each
+/// other, the placement changed last (`at`) wins; changed at the same moment, the lower device key's.
+#[allow(clippy::too_many_arguments)]
+fn mirror_into(cfg: &mut Config, key: &str, my_key: &str, ip: std::net::IpAddr, port: u16, name: &str, edge: kvm_protocol::Edge, offset: Option<i32>, width: u32, height: u32, at: u64) -> bool {
+    if !cfg.mirror_layout {
+        return false;
+    }
+    let (want_edge, want_off) = (edge.opposite(), offset.map(|o| o.saturating_neg().clamp(-40000, 40000)));
+    let (w, h) = (width.clamp(100, 20000), height.clamp(100, 20000));
+    let addr = std::net::SocketAddr::new(ip, port).to_string();
+    let host = ip.to_string();
+    let found = cfg.remotes.iter().position(|r| (!r.key.is_empty() && r.key == key) || r.addr == addr || r.addr.rsplit_once(':').map(|(h, _)| h) == Some(host.as_str()));
+    let taken = |cfg: &Config, skip: Option<usize>| cfg.remotes.iter().enumerate().any(|(j, o)| Some(j) != skip && o.enabled && o.edge == want_edge);
+    match found {
+        Some(i) => {
+            let free = !taken(cfg, Some(i));
+            let r = &mut cfg.remotes[i];
+            let before = (r.edge, r.offset, r.width, r.height, r.key.clone());
+            let theirs_wins = at > r.layout_at || (at == r.layout_at && key < my_key);
+            if theirs_wins && free {
+                r.edge = want_edge;
+                r.offset = want_off;
+                r.layout_at = at;
+            }
+            r.width = w;
+            r.height = h;
+            if r.key.is_empty() {
+                r.key = key.to_string();
+            }
+            before != (r.edge, r.offset, r.width, r.height, r.key.clone())
+        }
+        None => {
+            if cfg.remotes.len() >= 4 || taken(cfg, None) {
+                return false;
+            }
+            let base: String = shared::clean(name).trim().chars().take(28).collect();
+            let base = if base.is_empty() { host.clone() } else { base };
+            let mut n = base.clone();
+            let mut k = 2;
+            while cfg.remotes.iter().any(|r| r.name == n) {
+                n = format!("{base} {k}");
+                k += 1;
+            }
+            shared::info(&format!("{n} controls this computer, so it was added as a screen here too ({want_edge:?} side): the pointer now goes both ways"));
+            cfg.remotes.push(Remote { name: n, addr, edge: want_edge, width: w, height: h, enabled: true, key: key.to_string(), offset: want_off, layout_at: at });
+            true
+        }
+    }
+}
+
 fn apply(cfg: &Config, ctl: &Controller, ident: &Arc<Identity>) {
     let links: Vec<_> = cfg.remotes.iter().map(|r| (r.name.clone(), r.addr.clone(), r.enabled)).collect();
     if let Ok(g) = RUNNING.lock() {
@@ -158,13 +219,22 @@ fn remote_thread(
                     }
                 };
                 let cs = Arc::new(std::sync::Mutex::new(crate::clip::ClipSync::new()));
+                // what we know about the other end: when it last said anything, whether it answers pings
+                // (0.11+ does), and its protocol version
+                let heard = Arc::new(AtomicU64::new(shared::now_ms()));
+                let pongs = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let peer_ver = Arc::new(std::sync::atomic::AtomicU16::new(0));
                 {
                     // The other computer may send its clipboard text (applied only when sharing is on).
                     let cs = cs.clone();
                     let name = r.name.clone();
+                    let (heard, pongs, peer_ver) = (heard.clone(), pongs.clone(), peer_ver.clone());
                     std::thread::spawn(move || {
                         while let Ok(m) = rd.recv() {
+                            heard.store(shared::now_ms(), Ordering::SeqCst);
                             match m {
+                                Message::Pong => pongs.store(true, Ordering::SeqCst),
+                                Message::Caps { version } => peer_ver.store(version, Ordering::SeqCst),
                                 // its real monitors: drawn on the map, and the size used for crossing over
                                 Message::ScreenInfo { width, height, monitors } => {
                                     let (w, h) = (width.clamp(100, 20000), height.clamp(100, 20000));
@@ -192,9 +262,38 @@ fn remote_thread(
                     });
                 }
                 let mut last_clip = std::time::Instant::now();
+                let mut last_ping = std::time::Instant::now();
+                let mut last_layout_check = std::time::Instant::now() - Duration::from_secs(5);
+                let mut sent_layout = None;
                 let end = loop {
                     if GEN.load(Ordering::SeqCst) != generation {
                         break io::Error::new(io::ErrorKind::Other, "configuration changed");
+                    }
+                    // It answers pings but has been silent for 4 seconds: it is gone (unplugged, asleep,
+                    // crashed). Give control back now instead of waiting minutes for the network to notice.
+                    if pongs.load(Ordering::SeqCst) && shared::now_ms().saturating_sub(heard.load(Ordering::SeqCst)) > 4000 {
+                        break io::Error::new(io::ErrorKind::TimedOut, "no answer for 4 seconds");
+                    }
+                    // keep pinging even while input is flowing, so "silent" always means "gone"
+                    if last_ping.elapsed() >= Duration::from_secs(1) {
+                        last_ping = std::time::Instant::now();
+                        if let Err(e) = wr.send(&Message::Ping) {
+                            break e;
+                        }
+                    }
+                    // tell it where it is on this computer's map (it mirrors that, so it can control us too)
+                    if listening && peer_ver.load(Ordering::SeqCst) >= 11 && last_layout_check.elapsed() >= Duration::from_secs(1) {
+                        last_layout_check = std::time::Instant::now();
+                        if let Some(me) = store::load_config().remotes.into_iter().find(|x| x.name == r.name) {
+                            let local = crate::screens::layout();
+                            let cur = (me.edge, me.offset, local.width, local.height, me.layout_at);
+                            if sent_layout != Some(cur) {
+                                sent_layout = Some(cur);
+                                if let Err(e) = wr.send(&Message::Neighbor { edge: cur.0, offset: cur.1, width: cur.2, height: cur.3, name: crate::discover::hostname(), at: cur.4 }) {
+                                    break e;
+                                }
+                            }
+                        }
                     }
                     if last_clip.elapsed() >= Duration::from_millis(600) {
                         last_clip = std::time::Instant::now();
@@ -205,7 +304,7 @@ fn remote_thread(
                             }
                         }
                     }
-                    match rx.recv_timeout(Duration::from_secs(1)) {
+                    match rx.recv_timeout(Duration::from_millis(500)) {
                         Ok(m) => {
                             // A mouse can produce 1000 moves a second: merge whatever is already queued into
                             // fewer messages so the network carries far fewer packets (same result, less latency).
@@ -227,11 +326,7 @@ fn remote_thread(
                                 break e;
                             }
                         }
-                        Err(RecvTimeoutError::Timeout) => {
-                            if let Err(e) = wr.send(&Message::Ping) {
-                                break e;
-                            }
-                        }
+                        Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 };
@@ -270,7 +365,8 @@ fn remote_thread(
                 }
             }
         }
-        sleep_until_event(generation, &r.name, Duration::from_secs(3));
+        // quick tries at first (a blip, a restart), then every 3 seconds
+        sleep_until_event(generation, &r.name, if fails <= 5 { Duration::from_secs(1) } else { Duration::from_secs(3) });
     }
 }
 
@@ -301,6 +397,39 @@ fn coalesce(batch: Vec<Message>) -> Vec<Message> {
 mod tests {
     use super::*;
     use kvm_protocol::MouseButton;
+
+    #[test]
+    fn a_controlling_computer_is_mirrored_onto_this_map() {
+        use kvm_protocol::Edge;
+        let ip: std::net::IpAddr = "10.0.0.20".parse().unwrap();
+        let go = |cfg: &mut Config, edge, off, at| mirror_into(cfg, "aa", "bb", ip, 24800, "LAPTOP", edge, off, 1920, 1080, at);
+        let mut cfg = Config::default();
+        // it has us on its Right, 200 px down: it goes on our Left, 200 px up
+        assert!(go(&mut cfg, Edge::Right, Some(200), 50));
+        let r = &cfg.remotes[0];
+        assert_eq!((r.name.as_str(), r.addr.as_str(), r.edge, r.offset, r.key.as_str(), r.layout_at), ("LAPTOP", "10.0.0.20:24800", Edge::Left, Some(-200), "aa", 50));
+        assert!(cfg.validate().is_ok());
+        // the same again changes nothing (so the two computers never ping-pong)
+        assert!(!go(&mut cfg, Edge::Right, Some(200), 50));
+        // dragged on the other computer later: follows
+        assert!(go(&mut cfg, Edge::Top, None, 90));
+        assert_eq!((cfg.remotes[0].edge, cfg.remotes[0].offset), (Edge::Bottom, None));
+        // an older placement than ours loses
+        assert!(!go(&mut cfg, Edge::Left, None, 60));
+        assert_eq!(cfg.remotes[0].edge, Edge::Bottom);
+        // same moment: the lower device key wins ("aa" < "bb" here, so theirs)
+        assert!(go(&mut cfg, Edge::Left, None, 90));
+        assert_eq!(cfg.remotes[0].edge, Edge::Right);
+        assert!(!mirror_into(&mut cfg, "cc", "bb", ip, 24800, "LAPTOP", Edge::Top, None, 1920, 1080, 90), "higher key at the same moment: ours stays");
+        // never onto a side another screen already has
+        cfg.remotes.push(Remote { name: "other".into(), addr: "10.0.0.9:24800".into(), edge: Edge::Left, ..Remote::default() });
+        go(&mut cfg, Edge::Right, None, 200);
+        assert_eq!(cfg.remotes[0].edge, Edge::Right);
+        // switched off: untouched
+        let mut off = Config { mirror_layout: false, ..Config::default() };
+        assert!(!go(&mut off, Edge::Right, None, 10));
+        assert!(off.remotes.is_empty());
+    }
 
     #[test]
     fn merges_moves_but_keeps_order_of_clicks() {

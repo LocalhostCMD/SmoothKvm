@@ -104,6 +104,14 @@ pub enum Message {
     /// A controlled computer's real screen: the size of its whole desktop and each monitor in it
     /// (x, y, width, height, relative to the desktop's top-left), so the controller can draw it on its map.
     ScreenInfo { width: u32, height: u32, monitors: Vec<[i32; 4]> },
+    // ---- 0.11: only sent to peers that announced version >= 11 ----
+    /// A controlled computer's own protocol version (so the controller knows what it may send it).
+    Caps { version: u16 },
+    /// Controller -> controlled: where you are on my map. `edge` = the side of MY desktop you are on,
+    /// `offset` as in `Remote::offset`, `width`/`height` = my desktop, `name` = my name. The controlled
+    /// computer mirrors this (me on its opposite side), so either one can control the other.
+    /// `at` = when that placement was last changed by hand (ms since 1970): the newer placement wins.
+    Neighbor { edge: Edge, offset: Option<i32>, width: u32, height: u32, name: String, at: u64 },
 }
 
 /// What the viewer sends back. Coordinates are in the window's own pixels (0,0 = top-left of its content).
@@ -119,7 +127,7 @@ pub enum WindowEvent {
 }
 
 /// Protocol version spoken by this build (in `Announce`).
-pub const PROTO_VERSION: u16 = 10;
+pub const PROTO_VERSION: u16 = 11;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AnimationStyle {
@@ -372,11 +380,14 @@ pub struct Remote {
     /// pointer crosses anywhere along the edge, scaled); `Some(o)` = real size, its top (left/right side) or
     /// left (top/bottom side) edge `o` pixels from this desktop's top or left, like monitors in display settings.
     pub offset: Option<i32>,
+    /// When its side/position was last changed by hand, on either computer (ms since 1970). Two computers
+    /// that control each other keep the newer placement.
+    pub layout_at: u64,
 }
 
 impl Default for Remote {
     fn default() -> Self {
-        Self { name: "Screen".into(), addr: String::new(), edge: Edge::Right, width: 1920, height: 1080, enabled: true, key: String::new(), offset: None }
+        Self { name: "Screen".into(), addr: String::new(), edge: Edge::Right, width: 1920, height: 1080, enabled: true, key: String::new(), offset: None, layout_at: 0 }
     }
 }
 
@@ -448,6 +459,9 @@ pub struct Config {
     pub corner_px: u32,
     /// Windows: closing the app window quits SmoothKvm. Off = it keeps running, with its icon in the tray.
     pub close_quits: bool,
+    /// Either computer can control the other: a computer that controls this one is added here as a
+    /// screen too (on the opposite side), and the two maps are kept in step.
+    pub mirror_layout: bool,
     /// Which built-in defaults this file has been brought up to (see `upgrade`). Missing in old files = 0.
     #[serde(default)]
     pub settings_rev: u32,
@@ -473,6 +487,7 @@ impl Default for Config {
             switch_delay_ms: 150,
             corner_px: 60,
             close_quits: false,
+            mirror_layout: true,
             settings_rev: SETTINGS_REV,
         }
     }

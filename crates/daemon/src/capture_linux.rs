@@ -466,6 +466,7 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
     });
     std::thread::spawn(scanner);
     crate::edge_linux::start();
+    crate::tray_linux::start();
     Ok(Controller)
 }
 

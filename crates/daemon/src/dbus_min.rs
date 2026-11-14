@@ -32,20 +32,20 @@ pub struct Bus {
     serial: u32,
 }
 
-fn pad(buf: &mut Vec<u8>, align: usize) {
+pub(crate) fn pad(buf: &mut Vec<u8>, align: usize) {
     while buf.len() % align != 0 {
         buf.push(0);
     }
 }
 
-fn put_str(buf: &mut Vec<u8>, s: &str) {
+pub(crate) fn put_str(buf: &mut Vec<u8>, s: &str) {
     pad(buf, 4);
     buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
     buf.extend_from_slice(s.as_bytes());
     buf.push(0);
 }
 
-fn put_sig(buf: &mut Vec<u8>, s: &str) {
+pub(crate) fn put_sig(buf: &mut Vec<u8>, s: &str) {
     buf.push(s.len() as u8);
     buf.extend_from_slice(s.as_bytes());
     buf.push(0);
@@ -289,6 +289,28 @@ impl Bus {
         let serial = self.next_serial();
         let fields = [Field::U32(5, to.serial), Field::Str(6, &to.sender)];
         let msg = encode(METHOD_RETURN, 0, serial, &fields, "", &[]);
+        self.sock.get_mut().write_all(&msg)
+    }
+
+    /// Answer a method call with a body already marshalled for signature `sig`.
+    pub fn reply_body(&mut self, to: &Msg, sig: &str, body: &[u8]) -> io::Result<()> {
+        if to.flags & NO_REPLY_EXPECTED != 0 || to.sender.is_empty() {
+            return Ok(());
+        }
+        let serial = self.next_serial();
+        let fields = [Field::U32(5, to.serial), Field::Str(6, &to.sender), Field::Sig(8, sig)];
+        let msg = encode(METHOD_RETURN, 0, serial, &fields, sig, body);
+        self.sock.get_mut().write_all(&msg)
+    }
+
+    /// Answer a method call with an error (so the caller doesn't wait for a timeout).
+    pub fn reply_error(&mut self, to: &Msg, name: &str) -> io::Result<()> {
+        if to.flags & NO_REPLY_EXPECTED != 0 || to.sender.is_empty() {
+            return Ok(());
+        }
+        let serial = self.next_serial();
+        let fields = [Field::Str(4, name), Field::U32(5, to.serial), Field::Str(6, &to.sender)];
+        let msg = encode(ERROR, 0, serial, &fields, "", &[]);
         self.sock.get_mut().write_all(&msg)
     }
 

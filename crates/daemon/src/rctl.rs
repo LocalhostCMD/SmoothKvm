@@ -183,6 +183,12 @@ fn handle(mut req: Request, token: &str, ident: &Arc<Identity>) {
                 Err(e) => json_reply(req, 400, json!({"error": e})),
             }
         }
+        // "Open settings" in the tray panel
+        ("/api/show", Method::Post) => {
+            #[cfg(target_os = "linux")]
+            std::thread::spawn(|| crate::tray_linux::open(false));
+            json_reply(req, 200, json!({"ok": true}));
+        }
         ("/api/release", Method::Post) => {
             crate::release_everything();
             json_reply(req, 200, json!({"ok": true}));

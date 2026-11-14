@@ -31,13 +31,14 @@ pub fn url() -> io::Result<String> {
     Ok(format!("http://127.0.0.1:{}/#{}", crate::httpd::port(), store::panel_token()?))
 }
 
-/// Open the app page in its own window.
-pub fn open_window() -> io::Result<()> {
-    let url = url()?;
+/// Open the app page in its own window (`tray` = the small panel instead).
+pub fn open_window(tray: bool) -> io::Result<()> {
+    let url = if tray { format!("http://127.0.0.1:{}/?view=tray#{}", crate::httpd::port(), store::panel_token()?) } else { url()? };
     let app_arg = format!("--app={url}");
+    let size = if tray { "--window-size=340,470" } else { "--window-size=1000,860" };
     for b in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "brave-browser", "microsoft-edge", "vivaldi"] {
         let ok = Command::new(b)
-            .args([app_arg.as_str(), "--new-window", "--window-size=1000,860", "--class=SmoothKvm"])
+            .args([app_arg.as_str(), "--new-window", size, "--class=SmoothKvm"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -59,11 +60,11 @@ pub fn open_window() -> io::Result<()> {
 pub fn run() -> io::Result<()> {
     if ctl::alive() {
         println!("Opening SmoothKvm...");
-        return open_window();
+        return open_window(std::env::args().any(|a| a == "--tray"));
     }
     crate::ensure_input_group();
     crate::start_embedded()?;
-    open_window()?;
+    open_window(false)?;
     eprintln!("SmoothKvm is running inside this app. It stops when you close its window.");
     // Wait for the page to show up, then for it to go away. Background tabs may poll only once a minute,
     // so "gone" means: closed (it says goodbye) or silent for several minutes.

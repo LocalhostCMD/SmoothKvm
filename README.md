@@ -49,8 +49,16 @@ how a paired computer is found again after its address changes).
   shows this computer's monitors and the other computer's screen at their real sizes; the pointer crosses exactly
   where they touch. A dashed screen fills the whole side (the pointer crosses anywhere along it). Terminal:
   `move <name> <side>`.
-- **Tray panel** (Windows): click the tray icon for a small panel (who is connected, transfers, clipboard and
-  file switches, emergency stop); double-click it, or choose Open settings, for the full window.
+- **Tray panel**: click the tray icon for a small panel (who is connected, transfers, clipboard and file
+  switches, emergency stop). Windows: double-click it, or choose Open settings, for the full window. Ubuntu
+  (KDE Plasma and other desktops with a StatusNotifier tray): right-click for the full window, middle-click
+  for emergency stop / resume.
+- **Either computer controls the other**: when one computer controls another, the other one adds it as a
+  screen too, on the opposite side, and the two maps stay in step (the placement changed last wins). On
+  Windows this needs **Let paired computers control this PC** (ticked for you when pairing). Turn it off
+  under Controls: *Either computer can control the other*.
+- **Never stuck on a dead screen**: if the computer you are controlling stops answering (unplugged, asleep,
+  crashed), control comes back to your own screen within about four seconds.
 - **Found again automatically**: if a paired computer gets a new address, SmoothKvm finds it on the network by
   its device key and reconnects; changing settings no longer interrupts the connection.
 - **Show an app on the other computer** (Windows → Linux, e.g. Fusion 360 from the laptop on the Ubuntu screen):
