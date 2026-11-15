@@ -365,8 +365,10 @@ fn remote_thread(
                 }
             }
         }
-        // quick tries at first (a blip, a restart), then every 3 seconds
-        sleep_until_event(generation, &r.name, if fails <= 5 { Duration::from_secs(1) } else { Duration::from_secs(3) });
+        // quick tries at first (a blip, a restart), then every 3 seconds; refused as unpaired: every 30 s
+        // (pairing again wakes this up at once), so the other computer is not flooded with alerts
+        let wait = if last_err.contains("not paired") { 30 } else if fails <= 5 { 1 } else { 3 };
+        sleep_until_event(generation, &r.name, Duration::from_secs(wait));
     }
 }
 

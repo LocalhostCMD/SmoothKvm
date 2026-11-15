@@ -212,7 +212,7 @@ fn handle_session(stream: TcpStream, ident: &Identity) -> io::Result<()> {
     let mut conn = est.conn;
     let who = store::short(&secure::to_hex(&est.remote_key));
     if let Err(e) = net::authorize(&mut conn, &est.remote_key, est.pin_paired, &peer) {
-        shared::alert(&format!("Unpaired device {peer} (id {who}) tried to connect and was refused"));
+        refused_alert(ip, &peer, &who, &est.remote_key);
         return Err(e);
     }
     if est.pin_paired {
@@ -223,6 +223,31 @@ fn handle_session(stream: TcpStream, ident: &Identity) -> io::Result<()> {
     let result = session_loop(conn, &peer, &who, id, &secure::to_hex(&est.remote_key), &secure::to_hex(&ident.public), ip);
     shared::session_end(id);
     result
+}
+
+/// Alert about a refused device, once per address and key every 10 minutes (it keeps retrying). If the
+/// address is a computer we paired with, say so: that computer was most likely reinstalled or reset.
+fn refused_alert(ip: std::net::IpAddr, peer: &str, who: &str, key: &[u8]) {
+    static SEEN: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+    let tag = format!("{peer} {who}");
+    let now = shared::now_ms();
+    if let Ok(mut seen) = SEEN.lock() {
+        seen.retain(|(_, t)| now.saturating_sub(*t) < 600_000);
+        if seen.iter().any(|(k, _)| *k == tag) {
+            return;
+        }
+        seen.push((tag, now));
+    }
+    let host = ip.to_string();
+    let cfg = store::load_config();
+    let known = cfg.remotes.iter().find(|r| r.addr.rsplit_once(':').map(|(h, _)| h) == Some(host.as_str()));
+    match known {
+        Some(r) if r.key != secure::to_hex(key) => shared::alert(&format!(
+            "{} ({peer}) connected with a different device key than the one you paired (now id {who}). If SmoothKvm was reinstalled or reset there, pair the two again; if not, something else is using that address. Refused (repeats are not logged for 10 minutes).",
+            r.name
+        )),
+        _ => shared::alert(&format!("Unpaired device {peer} (id {who}) tried to connect and was refused (repeats are not logged for 10 minutes)")),
+    }
 }
 
 fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64, key: &str, my_key: &str, ip: std::net::IpAddr) -> io::Result<()> {
