@@ -32,6 +32,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 mod api;
 mod clip;
+#[cfg(windows)]
+mod crash_win;
 mod ctl;
 mod discover;
 mod httpd;
@@ -644,6 +646,8 @@ fn usage() {
 }
 
 fn main() -> io::Result<()> {
+    #[cfg(windows)]
+    crash_win::install();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
     let pos: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
