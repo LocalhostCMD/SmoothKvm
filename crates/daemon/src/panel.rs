@@ -178,6 +178,24 @@ fn handle(mut req: Request, token: &str, ident: &Arc<store::Identity>) {
                 Err(e) => json_reply(req, 500, json!({"error": e.to_string()})),
             }
         }
+        ("/api/admin", Method::Get) => json_reply(req, 200, json!({"on": crate::app::admin_task_exists(), "elevated": crate::app::is_elevated()})),
+        ("/api/admin", Method::Post) => {
+            let on = data.get("on").and_then(|v| v.as_bool()).unwrap_or(false);
+            match crate::app::set_admin_mode(on) {
+                Ok(()) => {
+                    shared::info(if on { "Work with admin apps: on" } else { "Work with admin apps: off (takes effect when SmoothKvm next starts)" });
+                    let restart = on && !crate::app::is_elevated();
+                    json_reply(req, 200, json!({"on": on, "restart": restart}));
+                    if restart {
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_millis(400));
+                            gui::quit_app();
+                        });
+                    }
+                }
+                Err(e) => json_reply(req, 500, json!({"error": e.to_string()})),
+            }
+        }
         ("/api/show", Method::Post) => {
             gui::show_window();
             json_reply(req, 200, json!({"ok": true}));

@@ -379,10 +379,30 @@ pub fn downloads_dir() -> PathBuf {
 pub fn inbox() -> PathBuf {
     let chosen = store::load_config().inbox_dir;
     let chosen = chosen.trim();
-    if !chosen.is_empty() && Path::new(chosen).is_absolute() {
+    if !chosen.is_empty() && Path::new(chosen).is_absolute() && inbox_allowed(chosen) {
         return PathBuf::from(chosen);
     }
     downloads_dir().join("SmoothKvm")
+}
+
+/// Running as administrator ("Work with admin apps"), received files may only land inside your own user
+/// folder: anywhere else (Windows, Program Files) a paired computer could plant programs with admin rights.
+fn inbox_allowed(dir: &str) -> bool {
+    #[cfg(windows)]
+    {
+        if crate::app::is_elevated() {
+            let home = std::env::var("USERPROFILE").unwrap_or_default().to_lowercase();
+            let d = dir.replace('/', "\\").to_lowercase();
+            let app = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.display().to_string().to_lowercase())).unwrap_or_default();
+            let inside = |d: &str, root: &str| {
+                let r = root.trim_end_matches('\\');
+                !r.is_empty() && (d.trim_end_matches('\\') == r || d.starts_with(&format!("{r}\\")))
+            };
+            return !d.contains("..") && inside(&d, &home) && !inside(&d, &app);
+        }
+    }
+    let _ = dir;
+    true
 }
 
 /// Turn a path from the network into safe relative components, or refuse it. Nothing may escape the

@@ -204,6 +204,12 @@ pub fn available() -> Option<String> {
 fn work_dir() -> PathBuf {
     #[cfg(windows)]
     {
+        // Elevated, the installer it runs must come from a folder only administrators can change.
+        if crate::app::is_elevated() {
+            if let Some(d) = installer_dir() {
+                return d.join("updates");
+            }
+        }
         PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("SmoothKvm").join("updates")
     }
     #[cfg(unix)]

@@ -23,6 +23,7 @@ CloseApplications=no
 
 [Tasks]
 Name: "autostart"; Description: "Start SmoothKvm when I sign in"; GroupDescription: "Options:"
+Name: "adminmode"; Description: "Work with apps that run as administrator, like Task Manager (Windows asks for permission once)"; GroupDescription: "Options:"
 Name: "addpath"; Description: "Let me type SmoothKvm in a terminal (adds it to PATH)"; GroupDescription: "Options:"
 Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Options:"; Flags: unchecked
 
@@ -45,10 +46,70 @@ Filename: "{app}\SmoothKvmApp.exe"; Parameters: "open"; Description: "Open Smoot
 ; An update started from inside the app runs silently: reopen the app when it is done.
 Filename: "{app}\SmoothKvmApp.exe"; Parameters: "open"; Flags: nowait; Check: WizardSilent
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\updates"
+
 [UninstallRun]
 Filename: "{app}\SmoothKvm.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopSmoothKvm"
 
 [Code]
+const
+  AdminTask = 'SmoothKvm admin';
+
+function AdminTaskExists(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN "' + AdminTask + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+// "Work with admin apps" locks the install folder to administrators: run elevated so it can be updated.
+function InitializeSetup(): Boolean;
+var
+  Dir, Probe: string;
+  ResultCode: Integer;
+begin
+  Result := True;
+  if IsAdmin then exit;
+  Dir := ExpandConstant('{localappdata}\Programs\SmoothKvm');
+  if not DirExists(Dir) then exit;
+  Probe := Dir + '\.write-test';
+  if SaveStringToFile(Probe, '', False) then
+  begin
+    DeleteFile(Probe);
+    exit;
+  end;
+  if not ShellExec('runas', ExpandConstant('{srcexe}'), GetCmdTail, '', SW_SHOWNORMAL, ewNoWait, ResultCode) then
+    MsgBox('SmoothKvm is set to work with administrator apps, so updating it needs administrator permission.', mbError, MB_OK);
+  Result := False;
+end;
+
+// Turn "Work with admin apps" on or off (creates/removes its task, locks/unlocks the folder).
+procedure AdminSetup(Mode: string);
+var
+  ResultCode: Integer;
+  Exe: string;
+begin
+  Exe := ExpandConstant('{app}\SmoothKvm.exe');
+  if IsAdmin then
+    Exec(Exe, 'admin-setup ' + Mode, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+  else
+    ShellExec('runas', Exe, 'admin-setup ' + Mode, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if WizardIsTaskSelected('adminmode') then
+    begin
+      if not AdminTaskExists() then AdminSetup('on');
+    end
+    else if AdminTaskExists() then
+      AdminSetup('off');
+  end;
+end;
+
 function NeedsAddPath(Param: string): Boolean;
 var
   OrigPath: string;
@@ -83,6 +144,8 @@ var
   OrigPath, App: string;
   P: Integer;
 begin
+  if (CurUninstallStep = usUninstall) and AdminTaskExists() then
+    AdminSetup('off');
   if CurUninstallStep = usPostUninstall then
   begin
     App := ExpandConstant('{app}');

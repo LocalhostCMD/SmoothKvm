@@ -107,7 +107,8 @@ button.stop{background:var(--bad);color:#fff}
 .choice:hover{border-color:var(--acc)}.choice b{display:block;font-size:15.5px;margin-bottom:2px}.choice span{color:var(--mute);font-size:13px}
 .steps{padding-left:20px;margin:8px 0 12px}.steps li{margin:4px 0}
 .bigpin{font:700 60px/1.1 ui-monospace,Consolas,monospace;letter-spacing:6px;text-align:center;margin:18px 0 6px;user-select:all;white-space:nowrap}
-.codein{width:100%;font:700 38px ui-monospace,Consolas,monospace !important;letter-spacing:6px;text-align:center;padding:10px;border:2px solid var(--line) !important;border-radius:12px !important;margin:8px 0}
+.codein{width:100%;background:var(--bg);color:var(--ink);box-sizing:border-box;font:700 38px ui-monospace,Consolas,monospace !important;letter-spacing:6px;text-align:center;padding:10px;border:2px solid var(--line) !important;border-radius:12px !important;margin:8px 0}
+.codein::placeholder{color:var(--mute);opacity:.55}
 .sidepick{display:grid;grid-template-columns:1fr 1.3fr 1fr;grid-template-rows:42px 52px 42px;gap:8px;max-width:330px;margin:10px auto}
 .sidepick .meb{grid-area:2/2;border:2px solid var(--mute);border-radius:8px;display:grid;place-items:center;font-size:12.5px}
 .sidepick button{background:var(--bg);border:1.5px dashed var(--line);border-radius:8px;font-size:13px;cursor:pointer}
@@ -215,6 +216,7 @@ body.view-tray{background:var(--card);border:1px solid var(--line);overflow:hidd
       <label class="sw"><input id="mirror" type="checkbox"><span>Either computer can control the other<small>A computer that controls this one is added here as a screen too, on the opposite side, and both maps stay in step. The placement changed last wins.</small></span></label>
       <label class="sw win-only"><input id="guard" type="checkbox"><span>Game mode<small>Never switch screens while a full-screen app or game is running.</small></span></label>
       <label class="sw win-only"><input id="autostart" type="checkbox"><span>Start with Windows<small>Opens when you sign in, with its icon in the tray.</small></span></label>
+      <label class="sw win-only" style="margin-top:8px"><input id="adminmode" type="checkbox"><span>Work with apps that run as administrator<small id="adminhint">Task Manager, admin terminals and installers block normal programs. With this on, SmoothKvm runs with administrator rights (Windows asks once). Windows' own "allow changes" prompts stay blocked.</small></span></label>
       <label class="sw win-only"><input id="closequits" type="checkbox"><span>Closing the window quits SmoothKvm<small>Off: it keeps working, with its icon in the tray. Quit from the tray menu.</small></span></label>
     </div>
     <div class="card">
@@ -322,7 +324,7 @@ body.view-tray{background:var(--card);border:1px solid var(--line);overflow:hidd
     <div>Roughly where is that screen? (You can place it exactly on the map afterwards.)</div>
     <div class="sidepick" id="w-sides"></div>
     <div style="margin-top:8px">Type the code shown on it:</div>
-    <input id="w-code" class="codein" maxlength="9" inputmode="numeric" autocomplete="off" placeholder="0000 0000">
+    <input id="w-code" type="text" class="codein" maxlength="9" inputmode="numeric" autocomplete="off" placeholder="0000 0000">
     <label class="sw win-only" style="max-width:330px;margin:4px auto 0"><input id="w-both" type="checkbox" checked><span>Let it control this computer too<small>Turns on "Let paired computers control this PC".</small></span></label>
     <div class="btns center"><button class="b" id="w-pair">Pair</button></div>
     <div id="w-status" class="hint center"></div>
@@ -802,6 +804,9 @@ async function pollEvents(){
 $('alertok').onclick=()=>$('alertbar').classList.remove('show');
 $('evfilter').onchange=renderEvents;
 $('evcopy').onclick=async()=>{ try{ await navigator.clipboard.writeText(evAll.map(e=>new Date(e.t*1000).toISOString()+' '+e.level.toUpperCase()+' '+e.text).join('\n')); say('Log copied',true);}catch(e){ say('Could not copy',false);} };
+async function loadAdmin(){ try{ const r=await api('/api/admin'), c=$('adminmode'); c.checked=!!r.on;
+  if(r.on && !r.elevated) $('adminhint').textContent='On, but this copy was started normally. Quit SmoothKvm from the tray and open it again.';
+  c.onchange=async()=>{ c.disabled=true; try{ const x=await api('/api/admin',{on:c.checked}); say(x.restart?'SmoothKvm restarts with administrator rights...':(c.checked?'On':'Off. It applies the next time SmoothKvm starts.'),true); }catch(e){ say(e.message,false); c.checked=!c.checked; } c.disabled=false; }; }catch(e){} }
 async function loadAuto(){ try{ const r=await api('/api/autostart'); $('autostart').checked=!!r.on; $('autostart').onchange=async()=>{ try{ await api('/api/autostart',{on:$('autostart').checked}); }catch(e){ say(e.message,false); $('autostart').checked=!$('autostart').checked; } }; }catch(e){} }
 function human(b){ return b>=1e9?(b/1e9).toFixed(2)+' GB':b>=1e6?(b/1e6).toFixed(1)+' MB':b>=1e3?(b/1e3).toFixed(0)+' KB':b+' B'; }
 function renderXfer(s){
@@ -867,7 +872,7 @@ async function init(){
   try{
     const s=await api('/api/state'); os=s.os||'windows'; document.body.classList.add('os-'+os); document.title='SmoothKvm - '+(s.host||'');
     lastState=s; cfg=s.config; syncedCfg=JSON.stringify(cfg); status=s.status||{}; fillSimple(); bindSimple();
-    if(!TRAY){ let p='screens'; try{ p=localStorage.getItem('page')||p; }catch(e){} go(p); render(); if(os==='windows') loadAuto(); else bindLinuxDrop(); }
+    if(!TRAY){ let p='screens'; try{ p=localStorage.getItem('page')||p; }catch(e){} go(p); render(); if(os==='windows'){ loadAuto(); loadAdmin(); } else bindLinuxDrop(); }
     tick(); setInterval(tick, 1500);
   }
   catch(e){ say('Could not load: '+e.message+'  (open this page with the SmoothKvm command)', false); }

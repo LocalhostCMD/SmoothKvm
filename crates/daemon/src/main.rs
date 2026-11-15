@@ -725,6 +725,10 @@ fn main() -> io::Result<()> {
         Some("install") => app::install(flag("--autostart")),
         #[cfg(windows)]
         Some("uninstall") => app::uninstall(),
+        #[cfg(windows)]
+        Some("admin-setup") => app::admin_setup(pos.first().map(|s| s.as_str()) == Some("on")),
+        #[cfg(windows)]
+        Some("relaunch") => app::relaunch(),
         #[cfg(unix)]
         Some("open") | Some("panel") | Some("app") | Some("gui") => linux_app::run(),
         // run by the smoothkvm-helper systemd unit (root) to install a downloaded, signed update
