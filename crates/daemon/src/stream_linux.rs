@@ -303,6 +303,19 @@ fn refresh(handle: &str, live: &Mutex<Live>, known: Option<Vec<(AppWindow, Geom)
     }
 }
 
+static IDENT: std::sync::OnceLock<Arc<Identity>> = std::sync::OnceLock::new();
+
+/// This computer's identity, for windows sent by dragging them to an edge (see edge_linux).
+pub fn set_ident(ident: Arc<Identity>) {
+    let _ = IDENT.set(ident);
+}
+
+/// An app window was let go against the edge where computer `to` is.
+pub fn start_dropped(window: &str, to: &str) -> io::Result<String> {
+    let ident = IDENT.get().cloned().ok_or_else(|| err("not ready yet"))?;
+    start(window, Some(to.to_string()), ident)
+}
+
 /// Start showing window `window` on computer `to` (None = the only/first one). Returns that computer's name.
 pub fn start(window: &str, to: Option<String>, ident: Arc<Identity>) -> io::Result<String> {
     if !valid_id(window) {

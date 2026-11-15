@@ -48,6 +48,12 @@ unsafe fn title_of(h: HWND) -> String {
     shared::clean(&String::from_utf16_lossy(&buf[..n.max(0) as usize]))
 }
 
+unsafe fn class_of(h: HWND) -> String {
+    let mut buf = [0u16; 128];
+    let n = GetClassNameW(h, &mut buf);
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
 unsafe fn client_size(h: HWND) -> Option<(u32, u32)> {
     let mut r = RECT::default();
     GetClientRect(h, &mut r).ok()?;
@@ -104,8 +110,10 @@ pub fn start(window: i64, to: Option<String>, ident: Arc<Identity>) -> io::Resul
     }
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
-    if pid == std::process::id() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "SmoothKvm's own windows are not shown on other computers"));
+    // SmoothKvm's own window can go across like any app, but not a window that already shows an app from
+    // another computer (that would send it back to where it runs).
+    if pid == std::process::id() && unsafe { class_of(h) } == "SmoothKvmAppView" {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "that window already shows an app from another computer"));
     }
     if streams().iter().any(|s| s.window == window) {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "that window is already shown on another computer"));

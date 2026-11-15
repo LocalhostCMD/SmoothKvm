@@ -531,6 +531,8 @@ fn serve(addr: &str, pair: bool, ctl_server: bool) -> io::Result<()> {
                 shared::warn(&format!("Controlling other computers from here is unavailable: {e}"));
             }
         }
+        #[cfg(target_os = "linux")]
+        stream_linux::set_ident(ident.clone());
         std::thread::spawn(move || rctl::serve(server, token, id));
     }
     if pair {
