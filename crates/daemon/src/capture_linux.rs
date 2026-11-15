@@ -56,6 +56,9 @@ struct State {
     pending_seq: u64,
     /// Where along the edge the pointer left this screen (it is still there while another screen is active).
     entry_frac: f32,
+    /// The pointer is resting on this edge now (KWin reports only when it gets there, not while you keep
+    /// pushing), so a crossing refused for the moment (not connected yet, a button held) can happen later.
+    rest: Option<(Edge, f32, Option<(i64, i64)>)>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -161,6 +164,20 @@ fn return_effect(st: &State) {
 pub fn edge_hit(side: Edge, frac: f32, px: Option<(i64, i64)>) {
     let Ok(mut g) = STATE.lock() else { return };
     let Some(st) = g.as_mut() else { return };
+    st.rest = Some((side, frac, px));
+    hit(st, side, frac, px);
+}
+
+/// The pointer is still resting on an edge: try that crossing again (it may be allowed now).
+fn retry_rest(st: &mut State) {
+    if let Some((side, frac, px)) = st.rest {
+        if st.active.is_none() && st.armed && !st.strip_shown && st.local_buttons.is_empty() {
+            hit(st, side, frac, px);
+        }
+    }
+}
+
+fn hit(st: &mut State, side: Edge, frac: f32, px: Option<(i64, i64)>) {
     st.pending = None;
     if st.paused || st.active.is_some() || !st.armed {
         return;
@@ -306,6 +323,7 @@ pub fn edge_away() {
     if let Ok(mut g) = STATE.lock() {
         if let Some(st) = g.as_mut() {
             st.armed = true;
+            st.rest = None;
             st.pending = None; // moved off the edge before the delay ran out: no switch
         }
     }
@@ -335,7 +353,9 @@ fn move_remote(st: &mut State, dx: i32, dy: i32) {
         return_effect(st);
         leave(st);
         st.armed = false;
-        // Nudge this computer's pointer off the edge so it is clearly back (and doesn't sit on the trigger).
+        // Put this computer's pointer where you crossed back (lined up with the other screen as placed on
+        // the map), just off the edge so it is clearly back and doesn't sit on the trigger.
+        let frac_back = along as f32 / len.max(1) as f32;
         let (nx, ny) = match r.edge {
             Edge::Right => (-6, 0),
             Edge::Left => (6, 0),
@@ -344,7 +364,20 @@ fn move_remote(st: &mut State, dx: i32, dy: i32) {
         };
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));
-            crate::inject_linux::inject(&InputEvent::MouseMoveRel { dx: nx, dy: ny });
+            let d = crate::screens::layout();
+            let (w, h) = (d.width as i64, d.height as i64);
+            let placed = w > 20 && h > 20 && {
+                let (x, y) = match r.edge {
+                    Edge::Right => (w - 9, r.leave_along(frac_back, h)),
+                    Edge::Left => (8, r.leave_along(frac_back, h)),
+                    Edge::Top => (r.leave_along(frac_back, w), 8),
+                    Edge::Bottom => (r.leave_along(frac_back, w), h - 9),
+                };
+                crate::inject_linux::abs_move(x as i32, y as i32, d.width, d.height)
+            };
+            if !placed {
+                crate::inject_linux::inject(&InputEvent::MouseMoveRel { dx: nx, dy: ny });
+            }
         });
         notify("Back on this computer");
     } else {
@@ -417,6 +450,9 @@ impl Controller {
                     return;
                 }
                 st.connected[idx] = connected;
+                if connected {
+                    retry_rest(st); // you were already waiting on that edge
+                }
                 if !connected && st.active == Some(idx) {
                     leave(st);
                     notify("Connection lost: control is back on this computer");
@@ -457,6 +493,7 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
         vx: 0,
         vy: 0,
         armed: true,
+        rest: None,
         local_buttons: HashSet::new(),
         last_blocked_note: None,
         strip_shown: false,
@@ -660,6 +697,9 @@ fn handle(kind: u16, code: u16, value: i32, acc: (&mut i32, &mut i32, &mut i32, 
                         }
                         if !pressed {
                             st.local_buttons.remove(&b);
+                            if st.local_buttons.is_empty() && !st.strip_shown {
+                                retry_rest(st); // resting on an edge with a button held: cross now
+                            }
                             if st.local_buttons.is_empty() && st.strip_shown {
                                 // the drag ended (dropped on the strip, or elsewhere): the strip goes away
                                 st.strip_shown = false;
@@ -750,6 +790,7 @@ mod tests {
             vx: 0,
             vy: 0,
             armed: true,
+            rest: None,
             local_buttons: HashSet::new(),
             last_blocked_note: None,
             strip_shown: false,

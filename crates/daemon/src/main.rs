@@ -103,6 +103,31 @@ mod panel;
 fn inject(ev: &InputEvent) {
     inject_win::inject(ev)
 }
+
+/// Put the pointer on `side` of this computer's desktop, `frac` (0..1) along it. False if it cannot.
+#[cfg(windows)]
+fn place_at_edge(side: kvm_protocol::Edge, frac: f32) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    unsafe {
+        let (l, t) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
+        let b = (l, t, l + GetSystemMetrics(SM_CXVIRTUALSCREEN), t + GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        let (x, y) = fx::edge_point(side, frac, b);
+        SetCursorPos(x, y).is_ok()
+    }
+}
+#[cfg(target_os = "linux")]
+fn place_at_edge(side: kvm_protocol::Edge, frac: f32) -> bool {
+    let d = screens::layout();
+    if d.width == 0 || d.height == 0 {
+        return false;
+    }
+    let (x, y) = fx::edge_point(side, frac, (0, 0, d.width as i32, d.height as i32));
+    inject_linux::abs_move(x, y, d.width, d.height)
+}
+#[cfg(not(any(windows, target_os = "linux")))]
+fn place_at_edge(_side: kvm_protocol::Edge, _frac: f32) -> bool {
+    false
+}
 #[cfg(target_os = "linux")]
 fn inject(ev: &InputEvent) {
     inject_linux::inject(ev)
@@ -136,6 +161,10 @@ pub fn release_everything() {
 struct Held {
     keys: HashSet<u16>,
     buttons: HashSet<MouseButton>,
+    /// The pointer just arrived (Enter): the side of this screen and how far along it, and the controller's
+    /// two "snap to the corner, then move along the edge" moves seen so far. They are replaced by putting the
+    /// pointer exactly there (relative moves get mouse acceleration, so it would land off target).
+    placing: Option<(kvm_protocol::Edge, f32, Vec<InputEvent>)>,
 }
 
 impl Held {
@@ -379,7 +408,10 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64, ke
                         let _ = pong_tx.send(Message::Pong);
                         continue;
                     }
-                    Message::Enter { edge, .. } => shared::session_side(id, *edge),
+                    Message::Enter { edge, pos } => {
+                        shared::session_side(id, *edge);
+                        held.placing = Some((edge.opposite(), *pos, Vec::new()));
+                    }
                     // where this computer is on the controller's map: mirror it, so it works both ways
                     Message::Neighbor { edge, offset, width, height, name, at } => {
                         if let Some(port) = back {
@@ -448,10 +480,27 @@ fn apply_message(m: Message, held: &mut Held, cs: &mut clip::ClipSync) {
     match m {
         Message::Input(ev) => {
             let ev = sanitize(ev);
+            if let Some(mut p) = held.placing.take() {
+                if matches!(ev, InputEvent::MouseMoveRel { .. }) {
+                    p.2.push(ev);
+                    if p.2.len() < 2 {
+                        held.placing = Some(p);
+                    } else if !place_at_edge(p.0, p.1) {
+                        p.2.iter().for_each(inject);
+                    }
+                    return;
+                }
+                p.2.iter().for_each(inject);
+            }
             held.track(&ev);
             inject(&ev);
         }
-        Message::Leave | Message::ReleaseAll => held.release_all(),
+        Message::Leave | Message::ReleaseAll => {
+            if let Some(p) = held.placing.take() {
+                p.2.iter().for_each(inject);
+            }
+            held.release_all()
+        }
         Message::Clipboard(t) => cs.incoming(t),
         _ => {}
     }

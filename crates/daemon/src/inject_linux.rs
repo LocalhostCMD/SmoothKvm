@@ -240,13 +240,13 @@ fn abs_units(x: i32, y: i32, w: u32, h: u32) -> (i32, i32) {
 }
 
 /// Put the pointer at (x, y) on this computer's desktop (`w` x `h` pixels in all).
-pub fn abs_move(x: i32, y: i32, w: u32, h: u32) {
+pub fn abs_move(x: i32, y: i32, w: u32, h: u32) -> bool {
     if ABS_DEVICE.get().is_none() {
         match abs_device() {
             Ok(d) => {
                 let _ = ABS_DEVICE.set(Mutex::new(d));
             }
-            Err(_) => return,
+            Err(_) => return false,
         }
     }
     if let Some(dev) = ABS_DEVICE.get() {
@@ -255,8 +255,10 @@ pub fn abs_move(x: i32, y: i32, w: u32, h: u32) {
             d.emit(EV_ABS, 0, ax);
             d.emit(EV_ABS, 1, ay);
             d.sync();
+            return true;
         }
     }
+    false
 }
 
 static DEVICE: OnceLock<Mutex<Uinput>> = OnceLock::new();
