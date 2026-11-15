@@ -14,12 +14,20 @@ fn limit(s: String) -> Option<String> {
     }
 }
 
+/// One clipboard operation at a time in this process. Each connection (this PC controlling another, and
+/// another controlling this PC) syncs the clipboard on its own thread; Windows lets two threads of one
+/// process have it open together, so a read could meet a write that frees the text being read (that was
+/// the heap-corruption crash in 0.11-0.12.2).
+#[cfg(windows)]
+static CLIP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(windows)]
 pub fn get() -> Option<String> {
     use windows::core::w;
     use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
     use windows::Win32::System::DataExchange::*;
-    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    let _one = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         // Password managers mark what they copy as "do not monitor"; respect that and never share it.
         let secret = RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"));
@@ -46,8 +54,10 @@ pub fn get() -> Option<String> {
             let hg = HGLOBAL(h.0 as *mut _);
             let p = GlobalLock(hg) as *const u16;
             if !p.is_null() {
+                // never read past the memory Windows gave us, even if the text has no terminating zero
+                let cap = (GlobalSize(hg) / 2).min(MAX_TEXT);
                 let mut n = 0usize;
-                while n < MAX_TEXT && *p.add(n) != 0 {
+                while n < cap && *p.add(n) != 0 {
                     n += 1;
                 }
                 out = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
@@ -82,6 +92,7 @@ pub fn set(text: &str) -> bool {
         return false;
     }
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let _one = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         let Ok(hg) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2) else { return false };
         let p = GlobalLock(hg) as *mut u16;
