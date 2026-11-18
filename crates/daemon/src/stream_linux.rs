@@ -49,7 +49,7 @@ fn err(m: impl Into<String>) -> io::Error {
 const SCRIPT_NAME: &str = "smoothkvm-windows";
 const SCRIPT: &str = r#"// SmoothKvm: lists app windows / reports where one is / brings it to the front / resizes it. Runs once.
 (function () {
-    var act = "@ACT@", id = "@ID@", W = @W@, H = @H@;
+    var act = "@ACT@", id = "@ID@", W = @W@, H = @H@, X = @X@, Y = @Y@;
     var list = workspace.windowList ? workspace.windowList() : workspace.clientList();
     var out = [];
     for (var i = 0; i < list.length; i++) {
@@ -62,6 +62,13 @@ const SCRIPT: &str = r#"// SmoothKvm: lists app windows / reports where one is /
         if (act === "activate") {
             if (w.minimized) w.minimized = false;
             if (workspace.activeWindow !== undefined) workspace.activeWindow = w; else workspace.activeClient = w;
+        }
+        if (act === "place") {
+            // KDE snaps a window let go at an edge to half the screen (or maximizes it at the top): undo that
+            try { if (w.tile) w.tile = null; } catch (e) {}
+            try { if (w.setMaximize) w.setMaximize(false, false); } catch (e) {}
+            w.frameGeometry = { x: X, y: Y, width: W, height: H };
+            f = w.frameGeometry; c = w.clientGeometry ? w.clientGeometry : w.frameGeometry;
         }
         if (act === "resize") {
             w.frameGeometry = { x: f.x, y: f.y, width: W + (f.width - c.width), height: H + (f.height - c.height) };
@@ -98,12 +105,21 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn kwin(act: &str, id: &str, w: u32, h: u32) -> io::Result<Vec<(AppWindow, Geom)>> {
+    kwin_at(act, id, 0, 0, w, h)
+}
+
+/// Put window `id` back at x,y with frame size w×h (after it was dragged against an edge).
+pub fn place(id: &str, (x, y, w, h): (i32, i32, u32, u32)) {
+    let _ = kwin_at("place", id, x, y, w, h);
+}
+
+fn kwin_at(act: &str, id: &str, x: i32, y: i32, w: u32, h: u32) -> io::Result<Vec<(AppWindow, Geom)>> {
     if !(id.is_empty() || valid_id(id)) {
         return Err(err("bad window id"));
     }
     let _one = KWIN_LOCK.lock().map_err(|_| err("busy"))?;
     let path = crate::store::config_dir().join("kwin-windows.js");
-    std::fs::write(&path, SCRIPT.replace("@ACT@", act).replace("@ID@", id).replace("@W@", &w.to_string()).replace("@H@", &h.to_string()))?;
+    std::fs::write(&path, SCRIPT.replace("@ACT@", act).replace("@ID@", id).replace("@W@", &w.to_string()).replace("@H@", &h.to_string()).replace("@X@", &x.to_string()).replace("@Y@", &y.to_string()))?;
     if let Ok(mut g) = REPLY.lock() {
         *g = None;
     }
