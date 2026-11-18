@@ -288,9 +288,42 @@ fn run(id: u32, h: HWND, title: &str, target: &xfer::Target, ident: &Identity, s
     Ok(())
 }
 
+/// The window that was in front before a shown app was brought forward to receive input.
+static PREV_FRONT: Mutex<Option<isize>> = Mutex::new(None);
+
 unsafe fn focus(h: HWND) {
-    if GetForegroundWindow() != h {
+    let fg = GetForegroundWindow();
+    if fg != h {
+        // remember what you had in front here, unless it is another window being shown elsewhere
+        if !fg.0.is_null() && !streams().iter().any(|s| s.window == fg.0 as i64) {
+            if let Ok(mut p) = PREV_FRONT.lock() {
+                *p = Some(fg.0 as isize);
+            }
+        }
         let _ = SetForegroundWindow(h);
+    }
+}
+
+/// The pointer is back on this computer: windows shown on another computer step back behind your other
+/// windows (they had to come forward to receive clicks and keys from over there), and what you had in front
+/// gets the focus back. Typing there would otherwise go into the app you just used on the other computer.
+pub fn step_back() {
+    let shown = streams();
+    if shown.is_empty() {
+        return;
+    }
+    unsafe {
+        let fg = GetForegroundWindow();
+        let fg_shown = shown.iter().any(|s| s.window == fg.0 as i64);
+        if fg_shown {
+            let prev = PREV_FRONT.lock().ok().and_then(|p| *p).map(|p| HWND(p as *mut _));
+            if let Some(prev) = prev.filter(|p| IsWindow(*p).as_bool() && IsWindowVisible(*p).as_bool()) {
+                let _ = SetForegroundWindow(prev);
+            }
+        }
+        for s in &shown {
+            let _ = SetWindowPos(hwnd_of(s.window), HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
     }
 }
 

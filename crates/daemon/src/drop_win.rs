@@ -40,6 +40,7 @@ static IDENT: OnceLock<Arc<Identity>> = OnceLock::new();
 
 pub fn start(ident: Arc<Identity>) {
     let _ = IDENT.set(ident);
+    repair_snap();
     std::thread::spawn(|| unsafe { run() });
 }
 
@@ -105,6 +106,8 @@ struct Watch {
     edge: Edge,
     /// A window being dragged by its title bar (and where it was when the drag started).
     moving: Option<(isize, RECT)>,
+    /// That window was maximized when the drag started.
+    moving_max: bool,
     /// Since when that window has been pushed against the edge.
     pushing: Option<Instant>,
     /// A window already sent across: put it back where it was once you let go of it.
@@ -120,12 +123,103 @@ unsafe fn window_being_moved() -> Option<HWND> {
 
 static WATCH: Mutex<Option<Watch>> = Mutex::new(None);
 
+// ---- Windows Snap is switched off while a window is pushed into the edge that sends it across, so Windows
+// does not also snap it to half or a quarter of the screen. Only for this sign-in (never saved), and a marker
+// file turns it back on at the next start if SmoothKvm stopped in the middle of a drag.
+
+const SPI_GETWINARRANGING: u32 = 0x0082;
+const SPI_SETWINARRANGING: u32 = 0x0083;
+static SNAP_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn snap_marker() -> PathBuf {
+    store::config_dir().join("snap-off")
+}
+
+unsafe fn set_snap(on: bool) {
+    let _ = SystemParametersInfoW(SYSTEM_PARAMETERS_INFO_ACTION(SPI_SETWINARRANGING), on as u32, None, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
+}
+
+unsafe fn snap_on_now() -> bool {
+    let mut on = windows::Win32::Foundation::BOOL(0);
+    SystemParametersInfoW(SYSTEM_PARAMETERS_INFO_ACTION(SPI_GETWINARRANGING), 0, Some(&mut on as *mut _ as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)).is_ok() && on.as_bool()
+}
+
+unsafe fn suppress_snap(off: bool) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if off == SNAP_OFF.load(SeqCst) {
+        return;
+    }
+    if off {
+        if !snap_on_now() {
+            return; // already off in Windows' settings: leave it alone
+        }
+        let _ = std::fs::write(snap_marker(), b"");
+        set_snap(false);
+        SNAP_OFF.store(true, SeqCst);
+    } else {
+        set_snap(true);
+        SNAP_OFF.store(false, SeqCst);
+        let _ = std::fs::remove_file(snap_marker());
+    }
+}
+
+/// SmoothKvm stopped while it had Snap switched off: switch it back on.
+fn repair_snap() {
+    if snap_marker().exists() {
+        unsafe { set_snap(true) };
+        let _ = std::fs::remove_file(snap_marker());
+    }
+}
+
+/// The pointer is within `zone` pixels of the desktop's outer edge `edge`.
+unsafe fn near_edge(p: POINT, edge: Edge, zone: i32) -> bool {
+    let l = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    let t = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    let (vw, vh) = (GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    match edge {
+        Edge::Right => p.x >= l + vw - zone,
+        Edge::Left => p.x < l + zone,
+        Edge::Top => p.y < t + zone,
+        Edge::Bottom => p.y >= t + vh - zone,
+    }
+}
+
+/// Put a window that went across back exactly where it was (place and size, maximized if it was), now and
+/// again a moment later in case Windows was still finishing the move.
+unsafe fn put_back(mw: isize, r: RECT, max: bool) {
+    let apply = move || {
+        let h = HWND(mw as *mut _);
+        if !IsWindow(h).as_bool() {
+            return;
+        }
+        if max {
+            if !IsZoomed(h).as_bool() {
+                let _ = ShowWindow(h, SW_SHOWMAXIMIZED);
+            }
+            return;
+        }
+        if IsZoomed(h).as_bool() {
+            let _ = ShowWindow(h, SW_RESTORE);
+        }
+        let mut now = RECT::default();
+        if GetWindowRect(h, &mut now).is_ok() && now == r {
+            return;
+        }
+        let _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    };
+    apply();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        apply();
+    });
+}
+
 unsafe fn tick(hwnd: HWND) {
     let mut g = match WATCH.lock() {
         Ok(g) => g,
         Err(_) => return,
     };
-    let w = g.get_or_insert_with(|| Watch { press: None, dragging: false, released_at: None, targets: vec![], targets_at: None, edge: Edge::Right, moving: None, pushing: None, restore: None });
+    let w = g.get_or_insert_with(|| Watch { press: None, dragging: false, released_at: None, targets: vec![], targets_at: None, edge: Edge::Right, moving: None, moving_max: false, pushing: None, restore: None });
     let down = GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000 != 0;
     let mut p = POINT::default();
     let _ = GetCursorPos(&mut p);
@@ -137,6 +231,7 @@ unsafe fn tick(hwnd: HWND) {
                 let mut r = RECT::default();
                 if GetWindowRect(mw, &mut r).is_ok() {
                     w.moving = Some((mw.0 as isize, r));
+                    w.moving_max = IsZoomed(mw).as_bool();
                     let _ = InvalidateRect(hwnd, None, true);
                 }
             }
@@ -162,6 +257,9 @@ unsafe fn tick(hwnd: HWND) {
             }
             _ => {}
         }
+        // no Windows Snap while a window is being pushed into the edge that sends it across
+        let pushing_window = (w.moving.is_some() && w.dragging) || w.restore.is_some();
+        suppress_snap(pushing_window && near_edge(p, w.edge, 48));
         // a window pushed against the edge for a moment goes across without having to let go
         if w.dragging && w.restore.is_none() {
             if let (Some((mw, start)), Some(i)) = (w.moving, segment_at(hwnd, p)) {
@@ -187,17 +285,18 @@ unsafe fn tick(hwnd: HWND) {
     } else {
         w.press = None;
         w.pushing = None;
+        // the button is up, so Windows has finished the move without snapping: Snap can come back
+        suppress_snap(false);
         // the window that went across is put back where it was on this screen
         if let Some((mw, start)) = w.restore.take() {
-            let _ = SetWindowPos(HWND(mw as *mut _), None, start.left, start.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            put_back(mw, start, w.moving_max);
         }
         // a window was let go over the strip: show it on that computer, and put it back where it was
         if let Some((mw, start)) = w.moving.take() {
             if w.dragging {
                 if let Some(i) = segment_at(hwnd, p) {
                     let target = STRIP.lock().ok().and_then(|s| s.segments.get(i).map(|(t, _)| t.name.clone()));
-                    let mw_h = HWND(mw as *mut _);
-                    let _ = SetWindowPos(mw_h, None, start.left, start.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    put_back(mw, start, w.moving_max);
                     if let Some(ident) = IDENT.get().cloned() {
                         match crate::stream_win::start(mw as i64, target, ident) {
                             Ok(to) => shared::info(&format!("Showing that window on {to}")),

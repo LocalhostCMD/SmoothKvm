@@ -328,6 +328,8 @@ fn leave_remote(st: &mut State) {
     };
     st.send(Message::Leave);
     st.active = None;
+    // (not on the input hook's thread: that must answer quickly)
+    std::thread::spawn(crate::stream_win::step_back);
     unsafe {
         let _ = SetCursorPos(x, y);
     }

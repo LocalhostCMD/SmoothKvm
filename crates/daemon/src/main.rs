@@ -410,6 +410,8 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64, ke
                     }
                     Message::Enter { edge, pos } => {
                         shared::session_side(id, *edge);
+                        #[cfg(windows)]
+                        std::thread::spawn(stream_win::step_back);
                         held.placing = Some((edge.opposite(), *pos, Vec::new()));
                     }
                     // where this computer is on the controller's map: mirror it, so it works both ways
