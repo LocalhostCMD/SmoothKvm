@@ -108,6 +108,8 @@ struct Watch {
     moving: Option<(isize, RECT)>,
     /// That window was maximized when the drag started.
     moving_max: bool,
+    /// How long a window must be pushed against the edge to go across (the switch delay, read with the targets).
+    push_wait: Duration,
     /// Since when that window has been pushed against the edge.
     pushing: Option<Instant>,
     /// A window already sent across: put it back where it was once you let go of it.
@@ -219,7 +221,7 @@ unsafe fn tick(hwnd: HWND) {
         Ok(g) => g,
         Err(_) => return,
     };
-    let w = g.get_or_insert_with(|| Watch { press: None, dragging: false, released_at: None, targets: vec![], targets_at: None, edge: Edge::Right, moving: None, moving_max: false, pushing: None, restore: None });
+    let w = g.get_or_insert_with(|| Watch { press: None, dragging: false, released_at: None, targets: vec![], targets_at: None, edge: Edge::Right, moving: None, moving_max: false, push_wait: Duration::from_millis(250), pushing: None, restore: None });
     let down = GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000 != 0;
     let mut p = POINT::default();
     let _ = GetCursorPos(&mut p);
@@ -246,7 +248,9 @@ unsafe fn tick(hwnd: HWND) {
                         w.targets = xfer::targets();
                         // While another computer controls this one, the strip goes on the side facing it, so
                         // you drag the file toward that computer (otherwise the side chosen in the settings).
-                        w.edge = shared::controller_side().unwrap_or_else(|| store::load_config().drop_edge);
+                        let cfg = store::load_config();
+                        w.edge = shared::controller_side().unwrap_or(cfg.drop_edge);
+                        w.push_wait = Duration::from_millis(cfg.switch_delay_ms.max(150) as u64);
                         w.targets_at = Some(Instant::now());
                     }
                     if !w.targets.is_empty() {
@@ -263,7 +267,7 @@ unsafe fn tick(hwnd: HWND) {
         // a window pushed against the edge for a moment goes across without having to let go
         if w.dragging && w.restore.is_none() {
             if let (Some((mw, start)), Some(i)) = (w.moving, segment_at(hwnd, p)) {
-                let wait = Duration::from_millis(store::load_config().switch_delay_ms.max(150) as u64);
+                let wait = w.push_wait;
                 if w.pushing.get_or_insert_with(Instant::now).elapsed() >= wait {
                     let target = STRIP.lock().ok().and_then(|s| s.segments.get(i).map(|(t, _)| t.name.clone()));
                     w.moving = None;

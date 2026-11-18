@@ -279,6 +279,16 @@ pub fn enabled() -> bool {
 /// One per connection. Something is sent only when THIS computer's clipboard really changed (a new copy here),
 /// never merely because it differs from what arrived: if writing the clipboard ever fails, old text here is not
 /// bounced back over what you just copied on the other computer.
+/// This computer's clipboard text for `ClipSync::outgoing` (nothing when sharing is off). Slow, so it is never
+/// called while holding a lock that the input path also takes.
+pub fn read() -> Option<String> {
+    if enabled() {
+        get()
+    } else {
+        None
+    }
+}
+
 pub struct ClipSync {
     /// What this computer's clipboard held when it was last looked at.
     seen: String,
@@ -308,16 +318,18 @@ impl ClipSync {
     }
 
     /// New local text to send, if something new was copied here since last time.
-    pub fn outgoing(&mut self) -> Option<String> {
+    /// `now` is what `read()` returned: read the clipboard first, with no lock held (that can take a while:
+    /// Windows may be busy with it, Linux starts wl-paste), then hand it over here.
+    pub fn outgoing(&mut self, now: Option<String>) -> Option<String> {
         if !enabled() {
             return None;
         }
         if !self.primed {
-            self.seen = get().unwrap_or_default();
+            self.seen = now.unwrap_or_default();
             self.primed = true;
             return None;
         }
-        let t = self.step(get())?;
+        let t = self.step(now)?;
         crate::shared::info(&format!("Clipboard sent ({} characters)", t.chars().count()));
         Some(t)
     }

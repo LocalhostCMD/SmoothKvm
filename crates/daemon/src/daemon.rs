@@ -159,6 +159,15 @@ fn apply(cfg: &Config, ctl: &Controller, ident: &Arc<Identity>) {
     crate::sync_receiver(cfg.receive, cfg.port);
 }
 
+/// Clears the flag when dropped: a helper thread checks it and stops.
+struct StopOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 fn sleep_until_event(generation: u64, name: &str, total: Duration) {
     let step = Duration::from_millis(250);
     let mut waited = Duration::ZERO;
@@ -261,10 +270,51 @@ fn remote_thread(
                         rd.shutdown();
                     });
                 }
-                let mut last_clip = std::time::Instant::now();
+                // The slow, occasional checks (the clipboard: Linux starts wl-paste for it; the map: reads the
+                // settings file) run on their own thread and hand over what to send. This thread only sends, so
+                // mouse moves never wait behind them (that was a stutter twice a second).
+                let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                let (xtx, xrx) = channel::<Message>();
+                // (also stops it when this connection ends early, e.g. the settings changed)
+                let _stop = StopOnDrop(alive.clone());
+                {
+                    let (alive, cs, peer_ver, name) = (alive.clone(), cs.clone(), peer_ver.clone(), r.name.clone());
+                    std::thread::spawn(move || {
+                        let mut last_clip = std::time::Instant::now();
+                        let mut last_layout_check = std::time::Instant::now() - Duration::from_secs(5);
+                        let mut sent_layout = None;
+                        while alive.load(Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(100));
+                            // tell it where it is on this computer's map (it mirrors that, so it can control us too)
+                            if listening && peer_ver.load(Ordering::SeqCst) >= 11 && last_layout_check.elapsed() >= Duration::from_secs(1) {
+                                last_layout_check = std::time::Instant::now();
+                                if let Some(me) = store::load_config().remotes.into_iter().find(|x| x.name == name) {
+                                    let local = crate::screens::layout();
+                                    let cur = (me.edge, me.offset, local.width, local.height, me.layout_at);
+                                    if sent_layout != Some(cur) {
+                                        sent_layout = Some(cur);
+                                        let m = Message::Neighbor { edge: cur.0, offset: cur.1, width: cur.2, height: cur.3, name: crate::discover::hostname(), at: cur.4 };
+                                        if xtx.send(m).is_err() {
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                            if last_clip.elapsed() >= Duration::from_millis(600) {
+                                last_clip = std::time::Instant::now();
+                                let now = crate::clip::read();
+                                let text = cs.lock().ok().and_then(|mut c| c.outgoing(now));
+                                if let Some(t) = text {
+                                    if xtx.send(Message::Clipboard(t)).is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+                crate::boost_thread(true);
                 let mut last_ping = std::time::Instant::now();
-                let mut last_layout_check = std::time::Instant::now() - Duration::from_secs(5);
-                let mut sent_layout = None;
                 let end = loop {
                     if GEN.load(Ordering::SeqCst) != generation {
                         break io::Error::new(io::ErrorKind::Other, "configuration changed");
@@ -281,30 +331,18 @@ fn remote_thread(
                             break e;
                         }
                     }
-                    // tell it where it is on this computer's map (it mirrors that, so it can control us too)
-                    if listening && peer_ver.load(Ordering::SeqCst) >= 11 && last_layout_check.elapsed() >= Duration::from_secs(1) {
-                        last_layout_check = std::time::Instant::now();
-                        if let Some(me) = store::load_config().remotes.into_iter().find(|x| x.name == r.name) {
-                            let local = crate::screens::layout();
-                            let cur = (me.edge, me.offset, local.width, local.height, me.layout_at);
-                            if sent_layout != Some(cur) {
-                                sent_layout = Some(cur);
-                                if let Err(e) = wr.send(&Message::Neighbor { edge: cur.0, offset: cur.1, width: cur.2, height: cur.3, name: crate::discover::hostname(), at: cur.4 }) {
-                                    break e;
-                                }
-                            }
+                    // what the checking thread above has for the other computer
+                    let mut failed = None;
+                    while let Ok(m) = xrx.try_recv() {
+                        if let Err(e) = wr.send(&m) {
+                            failed = Some(e);
+                            break;
                         }
                     }
-                    if last_clip.elapsed() >= Duration::from_millis(600) {
-                        last_clip = std::time::Instant::now();
-                        let text = cs.lock().ok().and_then(|mut c| c.outgoing());
-                        if let Some(t) = text {
-                            if let Err(e) = wr.send(&Message::Clipboard(t)) {
-                                break e;
-                            }
-                        }
+                    if let Some(e) = failed {
+                        break e;
                     }
-                    match rx.recv_timeout(Duration::from_millis(500)) {
+                    match rx.recv_timeout(Duration::from_millis(100)) {
                         Ok(m) => {
                             // A mouse can produce 1000 moves a second: merge whatever is already queued into
                             // fewer messages so the network carries far fewer packets (same result, less latency).
@@ -330,6 +368,7 @@ fn remote_thread(
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 };
+                alive.store(false, Ordering::SeqCst);
                 ctl.set_connected(generation, idx, false);
                 wr.shutdown();
                 shared::set_status(&r.name, "offline", &end.to_string());

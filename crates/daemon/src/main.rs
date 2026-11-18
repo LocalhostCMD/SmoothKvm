@@ -357,7 +357,11 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64, ke
                 shared::session_side(id, *edge);
             }
             receiver_effect(&other);
-            apply_message(other, &mut held, &mut clip::ClipSync::new())
+            if let Message::Clipboard(t) = other {
+                std::thread::spawn(move || clip::ClipSync::new().incoming(t));
+            } else {
+                apply_message(other, &mut held);
+            }
         }
     }
     shared::info(&format!("{peer} (id {who}) is now controlling this PC"));
@@ -390,7 +394,9 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64, ke
                     continue;
                 }
                 last_clip = std::time::Instant::now();
-                let text = cs.lock().ok().and_then(|mut c| c.outgoing());
+                // read first, lock after: the input thread below must never wait for the clipboard
+                let now = clip::read();
+                let text = cs.lock().ok().and_then(|mut c| c.outgoing(now));
                 if let Some(t) = text {
                     if wr.send(&Message::Clipboard(t)).is_err() {
                         break;
@@ -399,6 +405,8 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64, ke
             }
         });
     }
+    // the thread that moves the pointer and presses keys here: ahead of everything else this computer is doing
+    boost_thread(true);
     let end = loop {
         match rd.recv() {
             Ok(m) => {
@@ -429,8 +437,17 @@ fn session_loop(mut conn: secure::SecureConn, peer: &str, who: &str, id: u64, ke
                 if let Message::DragStart { drag, names } = &m {
                     drag_win::begin(names.clone(), *drag);
                 }
-                if let Ok(mut c) = cs.lock() {
-                    apply_message(m, &mut held, &mut c);
+                match m {
+                    // writing the clipboard can take a moment (wl-copy, a busy clipboard): not on this thread
+                    Message::Clipboard(t) => {
+                        let cs = cs.clone();
+                        std::thread::spawn(move || {
+                            if let Ok(mut c) = cs.lock() {
+                                c.incoming(t);
+                            }
+                        });
+                    }
+                    m => apply_message(m, &mut held),
                 }
             }
             Err(e) => break e,
@@ -478,7 +495,7 @@ fn receiver_effect(m: &Message) {
 #[cfg(not(windows))]
 fn receiver_effect(_m: &Message) {}
 
-fn apply_message(m: Message, held: &mut Held, cs: &mut clip::ClipSync) {
+fn apply_message(m: Message, held: &mut Held) {
     match m {
         Message::Input(ev) => {
             let ev = sanitize(ev);
@@ -503,10 +520,22 @@ fn apply_message(m: Message, held: &mut Held, cs: &mut clip::ClipSync) {
             }
             held.release_all()
         }
-        Message::Clipboard(t) => cs.incoming(t),
         _ => {}
     }
 }
+
+/// Run this thread ahead of normal work, so pointer and keys stay smooth while the computer is busy (a game, a
+/// build, an app being shown on another computer). `input` = it handles input itself (higher still). Windows
+/// only; Linux needs extra rights to raise a thread, and its input path is short anyway.
+#[cfg(windows)]
+pub fn boost_thread(input: bool) {
+    use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST};
+    unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), if input { THREAD_PRIORITY_HIGHEST } else { THREAD_PRIORITY_ABOVE_NORMAL });
+    }
+}
+#[cfg(not(windows))]
+pub fn boost_thread(_input: bool) {}
 
 const MAX_SESSIONS: usize = 16;
 

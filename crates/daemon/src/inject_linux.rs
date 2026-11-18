@@ -44,6 +44,8 @@ struct RawEvent {
 
 pub struct Uinput {
     file: File,
+    /// Events waiting for the next sync (written together: one system call per input instead of three).
+    queued: Vec<RawEvent>,
 }
 
 fn ioctl(fd: i32, req: libc::c_ulong, arg: libc::c_ulong) -> io::Result<()> {
@@ -81,19 +83,23 @@ impl Uinput {
         ioctl(fd, UI_DEV_CREATE, 0)?;
         // Give the desktop a moment to notice the new device.
         std::thread::sleep(std::time::Duration::from_millis(300));
-        Ok(Self { file })
+        Ok(Self { file, queued: Vec::with_capacity(16) })
     }
 
+    /// Queue one event; `sync` hands the queued ones to the kernel in a single write.
     fn emit(&mut self, kind: u16, code: u16, value: i32) {
-        let ev = RawEvent { time: libc::timeval { tv_sec: 0, tv_usec: 0 }, kind, code, value };
-        let bytes = unsafe {
-            std::slice::from_raw_parts(&ev as *const RawEvent as *const u8, std::mem::size_of::<RawEvent>())
-        };
-        let _ = self.file.write_all(bytes);
+        if self.queued.len() < self.queued.capacity() {
+            self.queued.push(RawEvent { time: libc::timeval { tv_sec: 0, tv_usec: 0 }, kind, code, value });
+        }
     }
 
     fn sync(&mut self) {
         self.emit(EV_SYN, 0, 0);
+        let bytes = unsafe {
+            std::slice::from_raw_parts(self.queued.as_ptr() as *const u8, self.queued.len() * std::mem::size_of::<RawEvent>())
+        };
+        let _ = self.file.write_all(bytes);
+        self.queued.clear();
     }
 
     pub fn inject(&mut self, ev: &InputEvent) {
@@ -228,7 +234,7 @@ fn abs_device() -> io::Result<Uinput> {
     }
     ioctl(fd, UI_DEV_CREATE, 0)?;
     std::thread::sleep(std::time::Duration::from_millis(300));
-    Ok(Uinput { file })
+    Ok(Uinput { file, queued: Vec::with_capacity(16) })
 }
 
 static ABS_DEVICE: OnceLock<Mutex<Uinput>> = OnceLock::new();

@@ -179,6 +179,10 @@ pub fn start(cfg: Config) -> io::Result<Controller> {
     *STATE.lock().unwrap() = Some(screen_state(cfg));
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     std::thread::spawn(move || unsafe {
+        // Windows waits for this thread on every mouse move and key press, everywhere: it must never wait
+        // behind other work, or the whole pointer stutters.
+        use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL};
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
         let hooks = (|| -> windows::core::Result<()> {
             let hmod = HINSTANCE(GetModuleHandleW(None)?.0);
             SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), hmod, 0)?;
@@ -342,19 +346,19 @@ fn move_remote(st: &mut State, dx: i32, dy: i32) {
     if dx == 0 && dy == 0 {
         return;
     }
-    let Some(r) = st.active.and_then(|i| st.cfg.remotes.get(i)).cloned() else { return };
+    // (just the numbers: this runs for every mouse move, up to 1000 a second)
+    let Some((edge, rw, rh)) = st.active.and_then(|i| st.cfg.remotes.get(i)).map(|r| (r.edge, r.width as i32, r.height as i32)) else { return };
     st.input(InputEvent::MouseMoveRel { dx, dy });
     st.vx += dx;
     st.vy += dy;
-    let (rw, rh) = (r.width as i32, r.height as i32);
-    let back = match r.edge {
+    let back = match edge {
         Edge::Right => st.vx < 0,
         Edge::Left => st.vx >= rw,
         Edge::Top => st.vy >= rh,
         Edge::Bottom => st.vy < 0,
     };
     // the other screen's corners don't send you back either
-    let (along, len) = match r.edge {
+    let (along, len) = match edge {
         Edge::Left | Edge::Right => (st.vy.clamp(0, rh - 1) as i64, rh as i64),
         Edge::Top | Edge::Bottom => (st.vx.clamp(0, rw - 1) as i64, rw as i64),
     };
